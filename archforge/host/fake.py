@@ -133,9 +133,14 @@ class FakePipeline:
         self._edges_by_src: dict[str, list[m.Edge]] = defaultdict(list)
         for e in spec.edges:
             self._edges_by_src[e.from_].append(e)
+        # monotonic counter so each run() mints a UNIQUE run_id, even at R>1
+        # (a spec+task no longer collides across repeats). See spec §7 R-repeats.
+        self._run_counter = 0
 
     def run(self, task: Task) -> m.Trace:
-        run_id = _run_id(self._spec, task)
+        sid = self._spec.compute_spec_id()
+        run_id = _run_id(sid, task.task_id, self._run_counter)
+        self._run_counter += 1
         self._mw.begin_run(run_id, self._spec, task.task_id)
         last_text: str | None = None
         final_output: str | None = None
@@ -253,12 +258,16 @@ def _topo_order(spec: m.Spec) -> list[str]:
     return out
 
 
-def _run_id(spec: m.Spec, task: Task) -> str:
-    """Deterministic run_id for debugging; overrides with None so the store's
-    own sequencing still applies (the id is only for the Trace record)."""
+def _run_id(spec_id: str, task_id: str, counter: int) -> str:
+    """A unique, human-readable run_id: <spec hash>-<task>-<seq>.
 
-    h = hashlib.sha256(f"{spec.compute_spec_id()}|{task.task_id}".encode()).hexdigest()[:12]
-    return h
+    Uniqueness comes from the per-pipeline `counter` (one increment per `run()`),
+    so two repeats of the same (spec, task) — and two candidates that share a
+    spec — never collide. Determinism within a run comes from the spec/task hash.
+    """
+
+    h = hashlib.sha256(f"{spec_id}|{task_id}".encode()).hexdigest()[:8]
+    return f"{h}-{task_id}-{counter:04d}"
 
 
 __all__ = ["FakeHostMAS", "FakeAgent", "FakePipeline", "CrashOnCall"]
