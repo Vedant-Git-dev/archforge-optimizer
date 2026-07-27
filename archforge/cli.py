@@ -1,15 +1,109 @@
-"""ArchForge command-line interface.
+"""ArchForge command-line interface — the Forge (Phase 9).
 
-Phase 0 skeleton: subcommands are wired so `--help` is meaningful; each
-subcommand is a stub that is filled in over later phases (notably Phase 9).
+Wires the four organs (Architect, SuiteRunner, Judge, Gatekeeper) plus the
+filesystem stores into the runnable surface the user actually touches:
+
+    archforge lint <spec.json>                 validate a Spec (Phase 1)
+    archforge evolve  [--root R] [--seed S]    one Propose-Evaluate-Commit cycle
+    archforge evolve-loop [...]                repeat until budget cap or plateau
+    archforge approve [<id>...|--all]          drain the structural-change queue
+    archforge reject <id>                      reject a queued change (active kept)
+    archforge status                           incumbent Spec + lineage + counts
+    archforge report                           aggregate deltas across attempts
+
+Provider seam (the single place "real vs fake" lives at the CLI):
+  * `--provider scripted` (default) builds the zero-cost fakes — `FakeHostMAS`,
+    `ScriptedJudge`, `ScriptedArchitect` — so `evolve` is runnable end-to-end
+    with no LLM. Left unconfigured, the scripted architect simply plateaus
+    (it has no proposal to make); a deterministic *promotion* needs the organs
+    pre-configured, which is exactly what an embedding test supplies via
+    `components=...` (see `tests/integration/test_cli.py`).
+  * `--provider anthropic|openai` is reserved for Phase 11 (real LLMs); the
+    evolve-family prints a "not implemented until Phase 11" notice and exits.
+
+`_ensure_incumbent` bootstraps the root incumbent from `--seed <spec.json>`
+zero-LLM (commit as INCUMBENT + set_active) so the very first `evolve` has an
+active spec to mutate. Approval/rollback keep `active` moving only through the
+Gatekeeper (invariant I1); the CLI never mutates the pointer itself.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+import archforge.models as m
+from archforge.architect import ArchitectProtocol, ScriptedArchitect
+from archforge.engine import CycleAborted, CycleResult, Engine, EngineConfig, LoopResult
+from archforge.gatekeeper import Gatekeeper
+from archforge.host.base import HostMAS, Task
+from archforge.host.fake import FakeHostMAS
+from archforge.judge import ScriptedJudge
+from archforge.judge.base import JudgeProtocol, default_rubric
+from archforge.lint import lint
+from archforge.stores import AttemptStore, SpecStore, TraceStore
+from archforge.suite import Suite
 
 PROG = "archforge"
+_DEFAULT_ROOT = ".archforge"
+_PROVIDERS = ("scripted", "anthropic", "openai")
+
+
+# --------------------------------------------------------------------------- #
+# Injectable runtime organs — the test/embedding seam
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class Components:
+    """The four organs the Engine runs, injectable so a test/embedding can
+    supply pre-configured fakes (a scripted architect with a queued proposal +
+    a scripted judge with per-spec aggregates → a deterministic promotion).
+
+    When `main(..., components=None)` the CLI builds defaults per `--provider`
+    (scripted now; anthropic/openai land in Phase 11).
+    """
+
+    host: HostMAS
+    judge: JudgeProtocol
+    architect: ArchitectProtocol
+    suite: Suite
+
+
+# --------------------------------------------------------------------------- #
+# arg parsing
+# --------------------------------------------------------------------------- #
+
+
+def _add_store_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--root", default=_DEFAULT_ROOT,
+                   help="archforge state directory (default: .archforge)")
+
+
+def _add_evolve_args(p: argparse.ArgumentParser, *, loop: bool) -> None:
+    p.add_argument("--seed", metavar="PATH",
+                   help="bootstrap the root incumbent from this Spec JSON (no active yet)")
+    p.add_argument("--provider", choices=_PROVIDERS, default="scripted",
+                   help="LLM provider (default: scripted; anthropic/openai land in Phase 11)")
+    # thresholds
+    p.add_argument("--tau", type=float, default=m.Thresholds().tau,
+                   help="promotion margin τ (default: %(default)s)")
+    p.add_argument("--delta", type=float, default=m.Thresholds().delta,
+                   help="regression floor δ (default: %(default)s)")
+    p.add_argument("--repeats", type=int, default=1,
+                   help="R: repeats per task (default: 1)")
+    if loop:
+        p.add_argument("--max-cycles", type=int, default=EngineConfig().max_cycles,
+                       help="cap on P-E-C cycles (default: %(default)s)")
+        p.add_argument("--plateau-cycles", type=int, default=EngineConfig().plateau_cycles,
+                       help="K consecutive no-promotion cycles → plateau (default: %(default)s)")
+        p.add_argument("--max-tokens-total", type=int, default=None,
+                       help="total token budget cap; stop at or before reaching it (E3)")
+    p.add_argument("--max-tokens-per-cycle", type=int, default=None,
+                   help="per-cycle token cap; abort mid-cycle if exceeded (E3)")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -19,23 +113,279 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
-    sub.add_parser("evolve", help="run one Propose-Evaluate-Commit cycle (Phase 9)")
-    sub.add_parser("evolve-loop", help="repeat evolve until budget cap or plateau (Phase 9)")
-    sub.add_parser("approve", help="drain the structural-change approval queue (Phase 9)")
-    sub.add_parser("status", help="print the incumbent Spec and lineage (Phase 9)")
-    sub.add_parser("report", help="print aggregate deltas across attempts (Phase 9)")
+    # --- evolve (one cycle) --------------------------------------------------
+    ev = sub.add_parser("evolve",
+                        help="run one Propose-Evaluate-Commit cycle from the active incumbent")
+    _add_store_args(ev)
+    _add_evolve_args(ev, loop=False)
 
+    # --- evolve-loop ---------------------------------------------------------
+    evl = sub.add_parser("evolve-loop",
+                         help="repeat evolve until the budget cap or a plateau (E3/E8)")
+    _add_store_args(evl)
+    _add_evolve_args(evl, loop=True)
+
+    # --- approve (human gate, I4) --------------------------------------------
+    ap = sub.add_parser("approve",
+                        help="approve queued (PENDING_HUMAN) structural changes → active")
+    _add_store_args(ap)
+    ap.add_argument("attempts", nargs="*",
+                    help="attempt ids to approve (default: every pending change, in order)")
+    ap.add_argument("--all", action="store_true",
+                    help="approve every pending change (default when none are named)")
+
+    # --- reject --------------------------------------------------------------
+    rj = sub.add_parser("reject",
+                        help="reject a queued structural change — active is left alone")
+    _add_store_args(rj)
+    rj.add_argument("attempt_id", help="attempt id to reject")
+
+    # --- status / report -----------------------------------------------------
+    st = sub.add_parser("status", help="print the incumbent Spec + lineage + counts")
+    _add_store_args(st)
+
+    rp = sub.add_parser("report", help="print aggregate deltas across attempts")
+    _add_store_args(rp)
+
+    # --- lint (Phase 1) ------------------------------------------------------
     lint_p = sub.add_parser("lint", help="run the Spec Linter on a JSON Spec file")
+    _add_store_args(lint_p)
     lint_p.add_argument("path", help="path to a Spec JSON file")
+
     return parser
+
+
+# --------------------------------------------------------------------------- #
+# helpers
+# --------------------------------------------------------------------------- #
+
+
+def _stores(root: str) -> tuple[SpecStore, AttemptStore, TraceStore]:
+    return SpecStore(root), AttemptStore(root), TraceStore(root)
+
+
+def _thresholds(args: argparse.Namespace) -> m.Thresholds:
+    return m.Thresholds(tau=args.tau, delta=args.delta, repeats=args.repeats,
+                        plateau_cycles=getattr(args, "plateau_cycles", m.Thresholds().plateau_cycles))
+
+
+def _config(args: argparse.Namespace) -> EngineConfig:
+    return EngineConfig(
+        max_cycles=getattr(args, "max_cycles", EngineConfig().max_cycles),
+        max_tokens_per_cycle=getattr(args, "max_tokens_per_cycle", None),
+        max_tokens_total=getattr(args, "max_tokens_total", None),
+        repeats=args.repeats,
+        plateau_cycles=getattr(args, "plateau_cycles", EngineConfig().plateau_cycles),
+    )
+
+
+def _default_components(args: argparse.Namespace) -> Components:
+    """Default scripted organs for a real `--provider scripted` invocation.
+
+    Unconfigured fakes are well-defined but inert: the scripted architect has no
+    queued proposal so it plateaus, and the scripted judge returns a neutral
+    0.5 base. A deterministic *promotion* needs the organs pre-configured —
+    which is the test path through `main(..., components=...)`.
+    """
+
+    suite = Suite(suite_id="cli-default", rubric_id=default_rubric.rubric_id,
+                  tasks=[Task(task_id="t1", input="hello")])
+    return Components(host=FakeHostMAS(), judge=ScriptedJudge(),
+                      architect=ScriptedArchitect(), suite=suite)
+
+
+def _ensure_incumbent(args: argparse.Namespace, specs: SpecStore) -> str | None:
+    """Make sure an active incumbent exists before `evolve` runs.
+
+    If one already exists, return its id (no LLM, no overwrite). If none and a
+    `--seed` is supplied, lint + commit it as the root INCUMBENT and set active
+    (zero-LLM bootstrap). Returns the active id, or None if it could not.
+    """
+
+    current = specs.active_id()
+    if current is not None:
+        return current
+    seed_path = getattr(args, "seed", None)
+    if not seed_path:
+        return None
+    spec = m.Spec.model_validate(json.loads(Path(seed_path).read_text(encoding="utf-8")))
+    faults = lint(spec)
+    if faults:
+        raise SystemExit(
+            "refusing to bootstrap from --seed: spec fails the linter: "
+            + "; ".join(f"{f.code}({f.location or ''}): {f.message}" for f in faults)
+        )
+    spec_id = specs.commit(spec, parent_spec_id=None, status=m.SpecStatus.INCUMBENT)
+    specs.set_active(spec_id)
+    return spec_id
+
+
+def _pending(atts: AttemptStore) -> list[m.Attempt]:
+    return [a for a in atts.all() if a.verdict is m.Verdict.PENDING_HUMAN]
+
+
+def _fmt_spec(spec: m.Spec) -> str:
+    parent = spec.parent_spec_id or "(root)"
+    return (f"  spec_id:  {spec.spec_id}\n"
+            f"  parent:   {parent}\n"
+            f"  status:   {spec.status.value}\n"
+            f"  created:  {spec.created_at}\n"
+            f"  nodes:    {len(spec.nodes)}\n"
+            f"  edges:    {len(spec.edges)}")
+
+
+# --------------------------------------------------------------------------- #
+# subcommand handlers
+# --------------------------------------------------------------------------- #
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    specs, atts, _ = _stores(args.root)
+    active_id = specs.active_id()
+    if active_id is None:
+        print("No incumbent yet. Bootstrap with `archforge evolve --seed <spec.json>`.")
+        return 0
+    spec = specs.get(active_id)
+    print("active incumbent:")
+    print(_fmt_spec(spec))
+    chain = specs.lineage(active_id)
+    print("lineage: " + " <- ".join(chain))
+    print(f"specs known: {len(specs.known_ids())}    "
+          f"archived: {len(specs.archived_ids())}    "
+          f"attempts: {len(atts.all())}    "
+          f"pending: {len(_pending(atts))}")
+    return 0
+
+
+def _cmd_report(args: argparse.Namespace) -> int:
+    specs, atts, _ = _stores(args.root)
+    rows = atts.all()
+    if not rows:
+        print("No attempts recorded yet.")
+        return 0
+    print(f"{'attempt_id':<18}{'verdict':<14}{'kind':<13}{'target':<8}"
+          f"{'mean':>7}{'margin':>9}{'tokens':>8}  change")
+    print("-" * 90)
+    for a in rows:
+        r = a.suite_result
+        mean = f"{r.mean:.3f}" if r is not None else "-"
+        margin = f"{r.margin_vs_incumbent:+.3f}" if r is not None else "-"
+        toks = str(r.tokens) if r is not None else "-"
+        print(f"{(a.attempt_id or '-'):<18}{a.verdict.value:<14}"
+              f"{a.change.kind.value:<13}{a.change.target:<8}"
+              f"{mean:>7}{margin:>9}{toks:>8}  {a.change.diff}")
+    return 0
+
+
+def _cmd_approve(args: argparse.Namespace) -> int:
+    specs, atts, _ = _stores(args.root)
+    gk = Gatekeeper(specs, atts, thresholds=_thresholds_for_approval())
+    if args.all or not args.attempts:
+        pending = _pending(atts)
+        if not pending:
+            print("No queued (PENDING_HUMAN) changes to approve.")
+            return 0
+        ids = [a.attempt_id for a in pending]
+    else:
+        ids = list(args.attempts)
+
+    approved: list[str] = []
+    for aid in ids:
+        try:
+            att = gk.approve(aid)            # only path w/ Gatekeeper that moves active
+        except ValueError as exc:
+            print(f"! {aid}: {exc}")
+            continue
+        approved.append(aid)
+        print(f"approved {aid}: active = {att.candidate_spec_id}  (verdict={att.verdict.value})")
+    if not approved:
+        print("Nothing approved.")
+        return 1
+    print(f"approved {len(approved)} change(s). active incumbent: {specs.active_id()}")
+    return 0
+
+
+def _cmd_reject(args: argparse.Namespace) -> int:
+    specs, atts, _ = _stores(args.root)
+    gk = Gatekeeper(specs, atts, thresholds=_thresholds_for_approval())
+    try:
+        att = gk.reject(args.attempt_id)
+    except ValueError as exc:
+        print(f"! {args.attempt_id}: {exc}")
+        return 1
+    print(f"rejected {args.attempt_id}: verdict={att.verdict.value}; "
+          f"active unchanged at {specs.active_id()}")
+    return 0
+
+
+def _thresholds_for_approval() -> m.Thresholds:
+    # approve/reject never consult τ/δ; defaults are fine (the verdicts already
+    # carry the cycle's margin on their suite_result).
+    return m.Thresholds()
+
+
+def _cmd_evolve(args: argparse.Namespace, *, components: Components | None,
+                loop: bool) -> int:
+    # Phase 11 gate: real providers are not wired yet. Injected components
+    # (the test path) always win — they ARE the scripted organs, by contract.
+    if components is None and args.provider != "scripted":
+        print(f"evolve with provider '{args.provider}' is not implemented until "
+              f"Phase 11. Use the default 'scripted' provider.", file=sys.stderr)
+        return 2
+
+    specs, atts, traces = _stores(args.root)
+
+    # zero-LLM bootstrap of the root incumbent from --seed (if none active)
+    active = _ensure_incumbent(args, specs)
+    if active is None:
+        print("No active incumbent and no --seed given; bootstrap with "
+              "`archforge evolve --seed <spec.json>` first.", file=sys.stderr)
+        return 1
+
+    organs = components or _default_components(args)
+    engine = Engine(
+        host=organs.host, judge=organs.judge, architect=organs.architect,
+        spec_store=specs, attempt_store=atts, trace_store=traces,
+        suite=organs.suite, thresholds=_thresholds(args), config=_config(args),
+    )
+
+    if not loop:
+        return _print_cycle(engine.evolve_cycle(cycle=0))
+    return _print_loop(engine.evolve_loop())
+
+
+def _print_cycle(r: CycleResult) -> int:
+    if not r.attempted:
+        print(f"archforge evolve: cycle={r.cycle} attempted=false action=none "
+              f"note={r.note}")
+        return 0
+    action = r.decision.action.value if r.decision else "none"
+    inc = f"{r.incumbent_mean:.3f}" if r.incumbent_mean is not None else "-"
+    cand = f"{r.candidate_mean:.3f}" if r.candidate_mean is not None else "-"
+    margin = f"{r.decision.margin:+.3f}" if r.decision else "-"
+    print(f"archforge evolve: cycle={r.cycle} attempted=true action={action} "
+          f"margin={margin} incumbent_mean={inc} candidate_mean={cand} "
+          f"promoted={'true' if r.promoted else 'false'} "
+          f"queued={'true' if r.queued else 'false'} "
+          f"attempt_id={r.applied_attempt_id} tokens={r.tokens}")
+    if r.note:
+        print(f"  note: {r.note}")
+    return 0
+
+
+def _print_loop(r: LoopResult) -> int:
+    print(f"archforge evolve-loop: cycles_run={r.cycles_run} promotions={r.promotions} "
+          f"queued={r.queued} plateaued={'true' if r.plateaued else 'false'} "
+          f"aborted={'true' if r.aborted else 'false'} "
+          f"final_incumbent={r.final_incumbent_id} "
+          f"final_mean={r.final_incumbent_mean if r.final_incumbent_mean is not None else '-'!s}")
+    if r.aborted and r.abort_reason:
+        print(f"  abort_reason: {r.abort_reason}")
+    return 0
 
 
 def _cmd_lint(path: str) -> int:
     # Minimal, dependency-light implementation; the full CLI surface lands in Phase 9.
-    import json
-    from pathlib import Path
-
-    from archforge.lint import lint
     from archforge.models import Spec
 
     spec = Spec.model_validate(json.loads(Path(path).read_text(encoding="utf-8")))
@@ -49,7 +399,20 @@ def _cmd_lint(path: str) -> int:
     return 1
 
 
-def main(argv: list[str] | None = None) -> int:
+# --------------------------------------------------------------------------- #
+# entry
+# --------------------------------------------------------------------------- #
+
+
+def main(argv: list[str] | None = None, *,
+        components: Components | None = None) -> int:
+    """Run the Forge CLI. `components` injects pre-configured organs (tests/embedding).
+
+    When `components` is None the CLI builds them per `--provider` (scripted now,
+    real LLMs in Phase 11). Only the evolve-family consults `components`;
+    `status`/`report`/`approve`/`reject`/`lint` read the stores directly.
+    """
+
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.command is None:
@@ -57,10 +420,21 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "lint":
         return _cmd_lint(args.path)
-    # Remaining subcommands land in later phases.
-    print(f"[stub] '{args.command}' is not implemented yet.")
+    if args.command == "status":
+        return _cmd_status(args)
+    if args.command == "report":
+        return _cmd_report(args)
+    if args.command == "approve":
+        return _cmd_approve(args)
+    if args.command == "reject":
+        return _cmd_reject(args)
+    if args.command == "evolve":
+        return _cmd_evolve(args, components=components, loop=False)
+    if args.command == "evolve-loop":
+        return _cmd_evolve(args, components=components, loop=True)
+    print(f"[stub] '{args.command}' is not implemented yet.")  # pragma: no cover
     return 0
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     sys.exit(main())

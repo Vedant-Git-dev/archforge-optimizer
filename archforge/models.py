@@ -292,7 +292,14 @@ class Change(BaseModel):
 
 
 class SuiteResult(BaseModel):
-    """Aggregated suite scores for a candidate vs its incumbent."""
+    """Aggregated suite scores for a candidate vs its incumbent.
+
+    Persisted onto the candidate's `Attempt` after the Gatekeeper decides, so the
+    human-facing surfaces (`status`, `report`, Approval Queue) can show the real
+    delta + cost without re-running the suite. `tokens` is the candidate-side
+    marginal cost only — the incumbent baseline is a shared, cacheable cost that
+    is not attributed to any single attempt (avoids double-counting across cycles).
+    """
 
     model_config = ConfigDict(extra="allow")
 
@@ -302,6 +309,7 @@ class SuiteResult(BaseModel):
     unrunnable: bool = False
     rubric_id: str
     suite_id: str
+    tokens: int = 0
 
 
 class Attempt(BaseModel):

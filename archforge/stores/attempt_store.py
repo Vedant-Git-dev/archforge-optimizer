@@ -14,8 +14,8 @@ import hashlib
 import json
 from pathlib import Path
 
-from archforge.models import Attempt, Verdict
-from archforge.stores._jsonl import append_jsonl, read_jsonl
+from archforge.models import Attempt, SuiteResult, Verdict
+from archforge.stores._jsonl import append_jsonl, read_jsonl, write_jsonl
 
 # Verdicts that should block re-proposing the same (parent, kind, target) —
 # the Architect consults `match` to skip known dead ends (spec E7).
@@ -77,6 +77,57 @@ class AttemptStore:
             for rec in read_jsonl(path):
                 records.append(Attempt.model_validate(rec))
         return records
+
+    # ----------------------------------------------------------------- verdict
+    def set_verdict(self, attempt_id: str, verdict: Verdict) -> Attempt:
+        """Flip an Attempt's verdict (used by the Gatekeeper / Approval Queue).
+
+        Verdicts are append-only, so this rewrites the attempt's row *in place*
+        within its parent file. Idempotent: flipping the same attempt to the same
+        verdict is a no-op. Returns the updated Attempt.
+
+        Used for: promotion (PENDING -> PROMOTED/PENDING_HUMAN/REJECTED), human
+        approval (PENDING_HUMAN -> PROMOTED), and post-promotion regression
+        (PROMOTED -> ROLLED_BACK) (spec E6).
+        """
+
+        att = self.require(attempt_id)
+        if att.verdict is verdict:
+            return att
+        att = att.model_copy(update={"verdict": verdict})
+        self._rewrite_parent_file(att)
+        return att
+
+    def _rewrite_parent_file(self, attempt: Attempt) -> None:
+        """Rewrite one parent's file with `attempt` replacing its same-id row."""
+        path = self._path_for_parent(attempt.parent_spec_id)
+        rows = read_jsonl(path)
+        out: list[dict] = []
+        replaced = False
+        for rec in rows:
+            if rec.get("attempt_id") == attempt.attempt_id:
+                out.append(attempt.model_dump(mode="json"))
+                replaced = True
+            else:
+                out.append(rec)
+        if not replaced:
+            out.append(attempt.model_dump(mode="json"))  # path landed here
+        write_jsonl(path, out)
+
+    # ----------------------------------------------------------------- result
+    def set_result(self, attempt_id: str, result: SuiteResult) -> Attempt:
+        """Stamp a candidate's suite result onto its attempt, in place.
+
+        Called by the Engine once the Gatekeeper decides, so the human-facing
+        surfaces (`status`, `report`, Approval Queue) show the real delta + cost.
+        Like `set_verdict`, this rewrites the attempt's row in place; idempotent
+        for the same result. Returns the updated Attempt.
+        """
+
+        att = self.require(attempt_id)
+        att = att.model_copy(update={"suite_result": result})
+        self._rewrite_parent_file(att)
+        return att
 
     # ----------------------------------------------------------------- dedup
     def match(self, parent_spec_id: str, kind: str, target: str) -> list[Attempt]:

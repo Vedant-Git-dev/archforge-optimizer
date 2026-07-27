@@ -45,6 +45,21 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return out
 
 
+def write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
+    """Atomically replace a JSONL file's contents with `records`.
+
+    Used by append-only stores when a row must be updated in place (a verdict
+    flip). Atomic so a crash leaves the prior file intact (E10 recovery), and
+    the in-place rewrite goes through `write_text_atomic` — same property as a
+    fresh write, no truncated-file state.
+    """
+
+    ensure_dir(path.parent)
+    lines = [json.dumps(r, sort_keys=True, separators=(",", ":")) for r in records]
+    text = ("\n".join(lines) + "\n") if lines else ""
+    write_text_atomic(path, text)
+
+
 def write_text_atomic(path: Path, text: str) -> None:
     """Write text atomically — a crash leaves the prior file or the new one."""
 
