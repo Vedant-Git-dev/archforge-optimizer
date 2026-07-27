@@ -16,6 +16,18 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.11",
 ]
+# Real LLM providers — install only the one(s) you run. None are required to
+# import or test the package; adapters import lazily and self-skip when absent.
+providers-anthropic = ["anthropic>=0.40"]
+providers-openai = ["openai>=1.40"]
+providers-groq = ["groq>=0.11"]
+providers-gemini = ["google-genai>=1.0"]
+providers = [
+    "anthropic>=0.40",
+    "openai>=1.40",
+    "groq>=0.11",
+    "google-genai>=1.0",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -26,8 +38,14 @@ packages = ["archforge"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+# Default run EXCLUDES the opt-in `smoke` marker (real, billed LLM calls).
+# Run them explicitly with:  python -m pytest -m smoke
+# (the user-passed `-m smoke` overrides this `-m "not smoke"`).
+addopts = "-ra -m 'not smoke'"
 pythonpath = ["."]
+markers = [
+    "smoke: opt-in real-LLM smoke tests (make live, billed API calls; not run by default)",
+]
 
 [tool.ruff]
 line-length = 100

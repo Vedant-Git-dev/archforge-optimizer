@@ -30,6 +30,27 @@ def _node(spec: m.Spec, node_id: str) -> m.Node:
     raise MutationError(f"unknown node '{node_id}'")
 
 
+def _coerce_edges(
+    edges: list[tuple[str, m.EdgeType]] | None,
+) -> list[tuple[str, m.EdgeType]] | None:
+    """Normalize JSON wiring (`[["a","sequence"], ...]`) to typed tuples.
+
+    `m.Edge` already coerces edge-type strings, but the tuple unpacking in the
+    caller relies on 2-element rows; accept either form so the real-LLM JSON path
+    and the typed test path share one shape.
+    """
+
+    if edges is None:
+        return None
+    out: list[tuple[str, m.EdgeType]] = []
+    for row in edges:
+        src, etype = row
+        if isinstance(etype, str):
+            etype = m.EdgeType(etype)
+        out.append((src, etype))
+    return out
+
+
 def _replace_node(spec: m.Spec, node_id: str, **overrides: Any) -> m.Spec:
     """Return a new Spec with one node replaced (shallow copy + keyword overrides)."""
 
@@ -72,7 +93,17 @@ def apply_add_node(
     `in_edges`: list of (from_node_id, edge_type) producing edges INTO the new node.
     `out_edges`: list of (to_node_id, edge_type) producing edges OUT of the new node.
     Gates for conditional edges default to None (the host decides routing).
+
+    `node` may be a dict — the real Architect feeds the LLM's JSON payload straight
+    through `apply_change`, so a dict arrives here; coerce it so both the scripted
+    (typed `m.Node`) and real-LLM (dict) paths land the same candidate. `etype`s in
+    the wiring arrive as strings from JSON and are coerced by `m.Edge` below.
     """
+
+    if isinstance(node, dict):
+        node = m.Node.model_validate(node)
+    in_edges = _coerce_edges(in_edges)
+    out_edges = _coerce_edges(out_edges)
 
     if any(n.node_id == node.node_id for n in spec.nodes):
         raise MutationError(f"node '{node.node_id}' already exists")

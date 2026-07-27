@@ -36,20 +36,20 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import archforge.models as m
-from archforge.architect import ArchitectProtocol, ScriptedArchitect
+from archforge.architect import Architect, ArchitectProtocol, ScriptedArchitect
 from archforge.engine import CycleAborted, CycleResult, Engine, EngineConfig, LoopResult
 from archforge.gatekeeper import Gatekeeper
 from archforge.host.base import HostMAS, Task
 from archforge.host.fake import FakeHostMAS
 from archforge.judge import ScriptedJudge
-from archforge.judge.base import JudgeProtocol, default_rubric
+from archforge.judge.base import Judge, JudgeProtocol, default_rubric
 from archforge.lint import lint
 from archforge.stores import AttemptStore, SpecStore, TraceStore
 from archforge.suite import Suite
 
 PROG = "archforge"
 _DEFAULT_ROOT = ".archforge"
-_PROVIDERS = ("scripted", "anthropic", "openai")
+_PROVIDERS = ("scripted", "anthropic", "openai", "groq", "gemini")
 
 
 # --------------------------------------------------------------------------- #
@@ -87,7 +87,16 @@ def _add_evolve_args(p: argparse.ArgumentParser, *, loop: bool) -> None:
     p.add_argument("--seed", metavar="PATH",
                    help="bootstrap the root incumbent from this Spec JSON (no active yet)")
     p.add_argument("--provider", choices=_PROVIDERS, default="scripted",
-                   help="LLM provider (default: scripted; anthropic/openai land in Phase 11)")
+                   help="LLM provider (default: scripted; anthropic/openai/groq/gemini are real)")
+    # real-provider configuration (ignored for 'scripted'). API key/base-url
+    # default to the provider SDK's env vars when omitted (ANTHROPIC_API_KEY,
+    # OPENAI_API_KEY, GROQ_API_KEY, GOOGLE_API_KEY/GEMINI_API_KEY).
+    p.add_argument("--api-key", default=None, help="provider API key (else read from env)")
+    p.add_argument("--base-url", default=None, help="provider base URL override")
+    p.add_argument("--architect-model", default=None,
+                   help="model id for the Architect (else the provider default)")
+    p.add_argument("--judge-model", default=None,
+                   help="model id for the Judge (else the provider default)")
     # thresholds
     p.add_argument("--tau", type=float, default=m.Thresholds().tau,
                    help="promotion margin τ (default: %(default)s)")
@@ -180,18 +189,56 @@ def _config(args: argparse.Namespace) -> EngineConfig:
 
 
 def _default_components(args: argparse.Namespace) -> Components:
-    """Default scripted organs for a real `--provider scripted` invocation.
+    """Build the runtime organs for `--provider` (no injected `components`).
 
-    Unconfigured fakes are well-defined but inert: the scripted architect has no
-    queued proposal so it plateaus, and the scripted judge returns a neutral
-    0.5 base. A deterministic *promotion* needs the organs pre-configured —
-    which is the test path through `main(..., components=...)`.
+    `--provider scripted` (default) builds the zero-cost fakes — well-defined but
+    inert: the scripted architect has no queued proposal so it plateaus, and the
+    scripted judge returns a neutral 0.5 base. A deterministic *promotion* needs
+    the organs pre-configured, which is the test path through
+    `main(..., components=...)`.
+
+    A real provider (`anthropic`/`openai`/`groq`/`gemini`)
+    builds ONE `LLMClient` via `make_client` and the REAL `Architect` + `Judge`
+    over it — the provider abstraction is the single seam, so neither organ
+    changes when the provider changes. The host stays `FakeHostMAS` in v1 (a real
+    MAS host is its own integration; the seam already accepts it).
     """
 
     suite = Suite(suite_id="cli-default", rubric_id=default_rubric.rubric_id,
                   tasks=[Task(task_id="t1", input="hello")])
-    return Components(host=FakeHostMAS(), judge=ScriptedJudge(),
-                      architect=ScriptedArchitect(), suite=suite)
+    if args.provider == "scripted":
+        return Components(host=FakeHostMAS(), judge=ScriptedJudge(),
+                          architect=ScriptedArchitect(), suite=suite)
+    from archforge.llm import make_client, LLMError
+
+    try:
+        llm = make_client(args.provider, api_key=args.api_key, base_url=args.base_url)
+    except LLMError as exc:
+        print(f"[provider] {exc}", file=sys.stderr)
+        raise
+    arch = Architect(llm, model=args.architect_model or _arch_model(args.provider))
+    judge = Judge(llm, model=args.judge_model or _judge_model(args.provider),
+                  rubric=default_rubric)
+    return Components(host=FakeHostMAS(), judge=judge, architect=arch, suite=suite)
+
+
+def _adapter_default_model(provider: str) -> str:
+    """The provider adapter's canonical default model (read on demand, SDK-free)."""
+    import importlib
+
+    mod = importlib.import_module(f"archforge.llm.{provider}")
+    return getattr(mod, "DEFAULT_MODEL", provider)
+
+
+def _arch_model(provider: str) -> str:
+    return _adapter_default_model(provider)
+
+
+def _judge_model(provider: str) -> str:
+    # the Judge is cheaper-by-design (one call per scored run); default it to the
+    # provider's flagship too so a first real run "just works" — override via
+    # --judge-model when a lighter model is wanted.
+    return _adapter_default_model(provider)
 
 
 def _ensure_incumbent(args: argparse.Namespace, specs: SpecStore) -> str | None:
@@ -326,12 +373,14 @@ def _thresholds_for_approval() -> m.Thresholds:
 
 def _cmd_evolve(args: argparse.Namespace, *, components: Components | None,
                 loop: bool) -> int:
-    # Phase 11 gate: real providers are not wired yet. Injected components
-    # (the test path) always win — they ARE the scripted organs, by contract.
+    # Injected `components` (the test/embedding path) always win — they ARE the
+    # scripted organs, by contract. Otherwise build organs per `--provider`:
+    # a real provider now wires the REAL Architect + Judge over a real LLMClient.
     if components is None and args.provider != "scripted":
-        print(f"evolve with provider '{args.provider}' is not implemented until "
-              f"Phase 11. Use the default 'scripted' provider.", file=sys.stderr)
-        return 2
+        try:
+            components = _default_components(args)           # builds a real LLMClient
+        except Exception:
+            return 2                                          # message already printed
 
     specs, atts, traces = _stores(args.root)
 
