@@ -24,6 +24,9 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from archforge.constants import (
+    ACTIVE_POINTER_FILE, ARCHIVED_FILE, SPECS_DIRNAME,
+)
 from archforge.models import Spec, SpecStatus
 from archforge.stores._jsonl import (
     append_jsonl,
@@ -32,8 +35,8 @@ from archforge.stores._jsonl import (
     write_text_atomic,
 )
 
-_POINTER_FILE = "active.pointer"
-_ARCHIVED_FILE = "archived.jsonl"
+_POINTER_FILE = ACTIVE_POINTER_FILE
+_ARCHIVED_FILE = ARCHIVED_FILE
 
 
 class NoActiveSpecError(RuntimeError):
@@ -54,7 +57,7 @@ class SpecStore:
 
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root)
-        self.specs_dir = self.root / "specs"
+        self.specs_dir = self.root / SPECS_DIRNAME
         self.specs_dir.mkdir(parents=True, exist_ok=True)
 
     # ----------------------------------------------------------------- commit

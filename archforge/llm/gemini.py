@@ -15,10 +15,11 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
+from archforge.constants import DEFAULT_MODELS
 from archforge.llm._common import extract_json, split_system
 from archforge.llm.base import Completion, LLMError, Message, Usage
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = DEFAULT_MODELS["gemini"]
 
 
 class GeminiClient:

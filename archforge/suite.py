@@ -24,6 +24,9 @@ from typing import Callable
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from archforge.constants import (
+    BACKOFF_CAP_SECONDS, DEFAULT_JUDGE_RETRIES, DEFAULT_UNRUNNABLE_FRAC,
+)
 import archforge.models as m
 from archforge.host.base import HostMAS, Task
 from archforge.judge.base import JudgeProtocol, SuiteAggregate
@@ -75,8 +78,8 @@ class SuiteRun(BaseModel):
 
 
 def _default_backoff(attempt: int) -> float:
-    """Exponential backoff capped at 30s (production default). Tests override."""
-    return min(2.0 ** attempt, 30.0)
+    """Exponential backoff capped at BACKOFF_CAP_SECONDS (production default). Tests override."""
+    return min(2.0 ** attempt, BACKOFF_CAP_SECONDS)
 
 
 class SuiteRunner:
@@ -88,8 +91,8 @@ class SuiteRunner:
         judge: JudgeProtocol,
         trace_store: TraceStore,
         *,
-        epsilon: float = 0.25,
-        judge_retries: int = 2,
+        epsilon: float = DEFAULT_UNRUNNABLE_FRAC,
+        judge_retries: int = DEFAULT_JUDGE_RETRIES,
         backoff: Callable[[int], float] | None = None,
     ) -> None:
         self._host = host

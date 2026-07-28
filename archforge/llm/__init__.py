@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from archforge.constants import ALL_PROVIDERS, REAL_PROVIDERS
 from archforge.llm.base import (
     Completion,
     LLMClient,
@@ -27,10 +28,9 @@ from archforge.llm.base import (
 )
 from archforge.llm.scripted import ScriptedLLM
 
-# The canonical order the CLI surfaces. Each value is a real provider adapter.
-REAL_PROVIDERS: tuple[str, ...] = ("anthropic", "openai", "groq", "gemini")
-_PROVIDERS = ("scripted",) + REAL_PROVIDERS
-ALL_PROVIDERS: tuple[str, ...] = _PROVIDERS
+# Re-exported from the single source of truth (archforge.constants) so the CLI
+# and the provider table share one definition.
+_PROVIDERS = ALL_PROVIDERS
 
 
 def make_client(provider: str, **kwargs: Any) -> LLMClient:

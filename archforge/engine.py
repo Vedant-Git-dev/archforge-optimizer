@@ -30,6 +30,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
+from archforge.constants import (
+    DEFAULT_MAX_CYCLES, DEFAULT_PLATEAU_CYCLES, DEFAULT_REPEATS,
+)
 import archforge.models as m
 from archforge.architect import ArchitectProtocol, ArchitectResult
 from archforge.gatekeeper import Action, Decision, Gatekeeper
@@ -99,11 +102,11 @@ class LoopResult:
 class EngineConfig:
     """Tunables for the loop (Beyond thresholds, which live in m.Thresholds)."""
 
-    max_cycles: int = 20
+    max_cycles: int = DEFAULT_MAX_CYCLES
     max_tokens_per_cycle: int | None = None      # E3 budget cap (None = unbounded)
     max_tokens_total: int | None = None
-    repeats: int = 1                              # R (adaptive engine raises it)
-    plateau_cycles: int = 5                       # K consecutive no-promotion (E8)
+    repeats: int = DEFAULT_REPEATS                # R (adaptive engine raises it)
+    plateau_cycles: int = DEFAULT_PLATEAU_CYCLES  # K consecutive no-promotion (E8)
 
 
 class Engine:

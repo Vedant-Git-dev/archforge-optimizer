@@ -15,10 +15,11 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
+from archforge.constants import ANTHROPIC_DEFAULT_MAX_TOKENS, DEFAULT_MODELS
 from archforge.llm._common import extract_json, split_system
 from archforge.llm.base import Completion, LLMError, Message, Usage
 
-DEFAULT_MODEL = "claude-sonnet-5"
+DEFAULT_MODEL = DEFAULT_MODELS["anthropic"]
 
 
 class AnthropicClient:
@@ -51,7 +52,7 @@ class AnthropicClient:
             for msg in rest
         ] or [{"role": "user", "content": ""}]
         kwargs: dict[str, Any] = {
-            "model": m, "max_tokens": max_tokens if max_tokens is not None else 1024,
+            "model": m, "max_tokens": max_tokens if max_tokens is not None else ANTHROPIC_DEFAULT_MAX_TOKENS,
             "messages": body,
         }
         if system:

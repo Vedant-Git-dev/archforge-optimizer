@@ -19,6 +19,7 @@ from typing import Protocol, Sequence, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from archforge.constants import DEFAULT_RUBRIC_ID, DEFAULT_SUB_RUBRICS
 import archforge.models as m
 from archforge.host.base import Task
 from archforge.llm.base import LLMClient, LLMError, Message, Role
@@ -43,12 +44,8 @@ class Rubric(BaseModel):
 
 
 default_rubric = Rubric(
-    rubric_id="default-v1",
-    sub_rubrics={
-        "correctness": "Is the final answer factually correct and aligned with the task?",
-        "completeness": "Does the answer address every part of the task?",
-        "grounding": "Are the claims supported by the inputs/context, not invented?",
-    },
+    rubric_id=DEFAULT_RUBRIC_ID,
+    sub_rubrics=dict(DEFAULT_SUB_RUBRICS),
 )
 
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from archforge.constants import TRACES_DIRNAME
 from archforge.models import Trace
 from archforge.stores._jsonl import append_jsonl, read_jsonl
 
@@ -20,7 +21,7 @@ class TraceStore:
 
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root)
-        self.traces_dir = self.root / "traces"
+        self.traces_dir = self.root / TRACES_DIRNAME
 
     def append(self, trace: Trace) -> None:
         append_jsonl(self.traces_dir / f"{trace.spec_id}.jsonl", trace.model_dump(mode="json"))

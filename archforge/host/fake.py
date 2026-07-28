@@ -23,6 +23,7 @@ import hashlib
 from collections import defaultdict
 from typing import Callable
 
+from archforge.constants import SHORT_HASH_LEN
 import archforge.models as m
 from archforge.host.base import Agent, AgentResponse, HostMAS, Runnable, Task
 from archforge.middleware import TracingMiddleware
@@ -97,7 +98,7 @@ class FakeAgent:
 def _default_responder(node: m.Node, prompt: str, _system: str) -> str:
     """Deterministic text so identical (node, prompt) -> identical output."""
 
-    h = hashlib.sha256(f"{node.node_id}|{prompt}".encode()).hexdigest()[:8]
+    h = hashlib.sha256(f"{node.node_id}|{prompt}".encode()).hexdigest()[:SHORT_HASH_LEN]
     return f"[{node.role}:{node.model}:{h}] {prompt}"
 
 
@@ -266,7 +267,7 @@ def _run_id(spec_id: str, task_id: str, counter: int) -> str:
     spec — never collide. Determinism within a run comes from the spec/task hash.
     """
 
-    h = hashlib.sha256(f"{spec_id}|{task_id}".encode()).hexdigest()[:8]
+    h = hashlib.sha256(f"{spec_id}|{task_id}".encode()).hexdigest()[:SHORT_HASH_LEN]
     return f"{h}-{task_id}-{counter:04d}"
 
 

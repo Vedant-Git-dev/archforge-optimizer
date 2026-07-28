@@ -10,10 +10,11 @@ from __future__ import annotations
 
 from typing import Sequence
 
+from archforge.constants import DEFAULT_MODELS
 from archforge.llm._common import openai_style_complete
 from archforge.llm.base import Completion, LLMError, Message
 
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_MODEL = DEFAULT_MODELS["groq"]
 
 
 class GroqClient:

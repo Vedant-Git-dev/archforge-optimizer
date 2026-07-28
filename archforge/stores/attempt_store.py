@@ -14,6 +14,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from archforge.constants import ATTEMPTS_DIRNAME, SPEC_ID_HASH_LEN
 from archforge.models import Attempt, SuiteResult, Verdict
 from archforge.stores._jsonl import append_jsonl, read_jsonl, write_jsonl
 
@@ -29,7 +30,7 @@ class UnknownAttemptError(KeyError):
 class AttemptStore:
     """Append-only Attempt memory, grouped per parent spec_id."""
 
-    ROOT_SUBDIR = "attempts"
+    ROOT_SUBDIR = ATTEMPTS_DIRNAME
 
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root)
@@ -157,4 +158,4 @@ class AttemptStore:
     def _compute_id(attempt: Attempt) -> str:
         payload = json.dumps(attempt.model_dump(mode="json"), sort_keys=True,
                              separators=(",", ":")).encode("utf-8")
-        return hashlib.sha256(payload).hexdigest()[:16]
+        return hashlib.sha256(payload).hexdigest()[:SPEC_ID_HASH_LEN]

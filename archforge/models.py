@@ -18,6 +18,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from archforge.constants import (
+    DEFAULT_DELTA, DEFAULT_PLATEAU_CYCLES, DEFAULT_REPEATS, DEFAULT_TAU,
+    DEFAULT_UNRUNNABLE_FRAC, MAX_REPEATS, SPEC_ID_HASH_LEN,
+)
+
 # --------------------------------------------------------------------------- #
 # Enums / literal types
 # --------------------------------------------------------------------------- #
@@ -336,12 +341,12 @@ class Thresholds(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    tau: float = 0.05  # promotion margin: keep iff candidate-mean - incumbent-mean >= τ
-    delta: float = 0.07  # regression floor (>= τ); rollback trigger (E6/I3)
-    repeats: int = 1  # R: repeats per task (adaptive; E3 raises it near ±τ)
-    max_repeats: int = 3  # cap on adaptive R
-    unrunnable_frac: float = 0.25  # ε: >ε tasks crash -> discard as unrunnable (E4)
-    plateau_cycles: int = 5  # K: consecutive no-promotion cycles -> plateau (E8)
+    tau: float = DEFAULT_TAU          # promotion margin: keep iff cand - inc >= τ
+    delta: float = DEFAULT_DELTA      # regression floor (>= τ); rollback trigger (E6/I3)
+    repeats: int = DEFAULT_REPEATS    # R: repeats per task (adaptive; E3 raises it near ±τ)
+    max_repeats: int = MAX_REPEATS    # cap on adaptive R
+    unrunnable_frac: float = DEFAULT_UNRUNNABLE_FRAC  # ε: >ε crash -> unrunnable (E4)
+    plateau_cycles: int = DEFAULT_PLATEAU_CYCLES     # K no-promotion -> plateau (E8)
 
 
 # --------------------------------------------------------------------------- #
@@ -353,7 +358,7 @@ def _content_hash(payload: dict[str, Any]) -> str:
     """Stable sha256 hex over JSON with sorted keys + separators (canonical)."""
 
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(blob).hexdigest()[:16]
+    return hashlib.sha256(blob).hexdigest()[:SPEC_ID_HASH_LEN]
 
 
 def scope_for_kind(kind: ChangeKind) -> Scope:

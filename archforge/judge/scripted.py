@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
+from archforge.constants import SCRIPTED_NOISE_PATTERN
 import archforge.models as m
 from archforge.host.base import Task
 from archforge.judge.base import JudgeProtocol, Rubric, SuiteAggregate, aggregate_scores, default_rubric
@@ -135,7 +136,7 @@ class ScriptedJudge:
         if self._noise_width > 0:
             idx = len(self.scored)
             # map idx onto a small repeating pattern within [-width, +width]
-            pattern = [1.0, 0.0, -1.0, 0.5, -0.5, 0.25, -0.25]
+            pattern = list(SCRIPTED_NOISE_PATTERN)
             jitter = (pattern[idx % len(pattern)]) * self._noise_width
             base = max(0.0, min(1.0, base + jitter))
         return base

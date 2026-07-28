@@ -47,9 +47,12 @@ from archforge.lint import lint
 from archforge.stores import AttemptStore, SpecStore, TraceStore
 from archforge.suite import Suite
 
-PROG = "archforge"
-_DEFAULT_ROOT = ".archforge"
-_PROVIDERS = ("scripted", "anthropic", "openai", "groq", "gemini")
+# Project-wide constants — single source of truth in archforge.constants.
+from archforge.constants import (
+    ALL_PROVIDERS as _PROVIDERS,
+    DEFAULT_MODELS, DEFAULT_ROOT_DIR as _DEFAULT_ROOT, DEFAULT_SUITE_ID,
+    DEFAULT_TASK_ID, DEFAULT_TASK_INPUT, PROG,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -204,8 +207,8 @@ def _default_components(args: argparse.Namespace) -> Components:
     MAS host is its own integration; the seam already accepts it).
     """
 
-    suite = Suite(suite_id="cli-default", rubric_id=default_rubric.rubric_id,
-                  tasks=[Task(task_id="t1", input="hello")])
+    suite = Suite(suite_id=DEFAULT_SUITE_ID, rubric_id=default_rubric.rubric_id,
+                  tasks=[Task(task_id=DEFAULT_TASK_ID, input=DEFAULT_TASK_INPUT)])
     if args.provider == "scripted":
         return Components(host=FakeHostMAS(), judge=ScriptedJudge(),
                           architect=ScriptedArchitect(), suite=suite)
@@ -216,29 +219,10 @@ def _default_components(args: argparse.Namespace) -> Components:
     except LLMError as exc:
         print(f"[provider] {exc}", file=sys.stderr)
         raise
-    arch = Architect(llm, model=args.architect_model or _arch_model(args.provider))
-    judge = Judge(llm, model=args.judge_model or _judge_model(args.provider),
+    arch = Architect(llm, model=args.architect_model or DEFAULT_MODELS[args.provider])
+    judge = Judge(llm, model=args.judge_model or DEFAULT_MODELS[args.provider],
                   rubric=default_rubric)
     return Components(host=FakeHostMAS(), judge=judge, architect=arch, suite=suite)
-
-
-def _adapter_default_model(provider: str) -> str:
-    """The provider adapter's canonical default model (read on demand, SDK-free)."""
-    import importlib
-
-    mod = importlib.import_module(f"archforge.llm.{provider}")
-    return getattr(mod, "DEFAULT_MODEL", provider)
-
-
-def _arch_model(provider: str) -> str:
-    return _adapter_default_model(provider)
-
-
-def _judge_model(provider: str) -> str:
-    # the Judge is cheaper-by-design (one call per scored run); default it to the
-    # provider's flagship too so a first real run "just works" — override via
-    # --judge-model when a lighter model is wanted.
-    return _adapter_default_model(provider)
 
 
 def _ensure_incumbent(args: argparse.Namespace, specs: SpecStore) -> str | None:
