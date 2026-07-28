@@ -1,6 +1,6 @@
-"""Provider-agnostic LLM abstraction (spec §3 Judge/Architect, Phase 4/11).
+"""Provider-agnostic LLM abstraction (spec §3 Judge/Architect).
 
-Both thinking components — the Judge (Phase 5) and the Architect (Phase 6) — talk
+Both thinking components — the Judge and the Architect — talk
 to a model only through the `LLMClient` protocol. This is the **single seam**
 where "real vs fake" lives: tests plug in `ScriptedLLM` (deterministic, free,
 crashable); a run plugs in a real provider via `make_client(provider)`.
@@ -28,9 +28,8 @@ from archforge.llm.base import (
 )
 from archforge.llm.scripted import ScriptedLLM
 
-# Re-exported from the single source of truth (archforge.constants) so the CLI
-# and the provider table share one definition.
-_PROVIDERS = ALL_PROVIDERS
+# `REAL_PROVIDERS` / `ALL_PROVIDERS` are re-exported (below in __all__) straight
+# from archforge.constants — the single source of truth the CLI also imports.
 
 
 def make_client(provider: str, **kwargs: Any) -> LLMClient:

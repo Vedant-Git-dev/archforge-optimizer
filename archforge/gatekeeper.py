@@ -1,4 +1,4 @@
-"""The Gatekeeper — the P-E-C "Commit" step (spec §3, §4, §6, §8; Phase 8).
+"""The Gatekeeper — the P-E-C "Commit" step (spec §3, §4, §6, §8).
 
 Lone enforcer of "fail closed to the incumbent": it is the only thing that ever
 moves the `active` pointer (via SpecStore.set_active) or flips an Attempt's

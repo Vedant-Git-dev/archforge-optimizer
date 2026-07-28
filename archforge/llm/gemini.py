@@ -1,4 +1,4 @@
-"""Google Gemini provider — an `LLMClient` over the `google-genai` SDK (Phase 11).
+"""Google Gemini provider — an `LLMClient` over the `google-genai` SDK.
 
 Gemini's API is not OpenAI-compatible: the system instruction is a separate
 parameter and the message array forbids a `system` role, so this adapter
@@ -26,12 +26,12 @@ class GeminiClient:
     """An `LLMClient` backed by the google-genai SDK (model family: Gemini)."""
 
     def __init__(self, *, api_key: str | None = None, base_url: str | None = None) -> None:
-        # `base_url` is accepted for seam uniformity with the other adapters
-        # (the CLI's `--base-url` passes through to every provider). The
-        # google-genai client keys endpoints per-model rather than via a single
-        # base_url in v1, so it is currently unused here — kept in the signature
-        # so `make_client("gemini", api_key=, base_url=)` does not TypeError.
-        del base_url
+        # `base_url` is accepted (and intentionally ignored) for seam uniformity:
+        # every adapter shares the `make_client(provider, *, api_key, base_url)`
+        # signature so the CLI's `--api-key`/`--base-url` pass through uniformly.
+        # The google-genai client routes endpoints per-model rather than via a
+        # single base_url, so there is nothing to apply it to here.
+        _ = base_url
         try:
             from google import genai
         except ImportError as e:

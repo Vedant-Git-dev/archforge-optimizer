@@ -1,4 +1,4 @@
-"""SuiteRunner — the P-E-C "Evaluate" step (spec §3, §4, §7; Phase 7).
+"""SuiteRunner — the P-E-C "Evaluate" step (spec §3, §4, §7).
 
 The ONLY component that invokes the host MAS. For one (Spec, Suite, R) it runs
 each task R times, scores each non-crashed run, and rolls the survivors into a
@@ -10,7 +10,7 @@ single comparable `SuiteRun`:
   * a task is "failed"           iff ALL its repeats crashed/unscored
   * `unrunnable` (E4 gate)       iff failed-task fraction > ε  (strictly greater;
     exactly ε is NOT unrunnable). Candidates flagged unrunnable are rejected by
-    the Gatekeeper (Phase 8) before any margin math.
+    the Gatekeeper before any margin math.
 
 `run_suite` creates ONE TracingMiddleware over the TraceStore and instantiates
 the host ONCE per suite (so a host's cumulative `invoke_count` advances in
@@ -186,4 +186,4 @@ def _sum_tokens(trace: m.Trace) -> int:
     return total
 
 
-__all__ = ["Suite", "SuiteRun", "SuiteRunner", "_default_backoff"]
+__all__ = ["Suite", "SuiteRun", "SuiteRunner"]

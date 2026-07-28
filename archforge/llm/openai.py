@@ -1,4 +1,4 @@
-"""OpenAI provider — an `LLMClient` over the `openai` SDK (Phase 11).
+"""OpenAI provider — an `LLMClient` over the `openai` SDK.
 
 Lazy SDK import like the other adapters. Uses the native
 `response_format={"type": "json_object"}` JSON mode when JSON is requested, with

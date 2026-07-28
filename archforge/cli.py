@@ -1,9 +1,9 @@
-"""ArchForge command-line interface — the Forge (Phase 9).
+"""ArchForge command-line interface — the Forge.
 
 Wires the four organs (Architect, SuiteRunner, Judge, Gatekeeper) plus the
 filesystem stores into the runnable surface the user actually touches:
 
-    archforge lint <spec.json>                 validate a Spec (Phase 1)
+    archforge lint <spec.json>                 validate a Spec
     archforge evolve  [--root R] [--seed S]    one Propose-Evaluate-Commit cycle
     archforge evolve-loop [...]                repeat until budget cap or plateau
     archforge approve [<id>...|--all]          drain the structural-change queue
@@ -18,8 +18,8 @@ Provider seam (the single place "real vs fake" lives at the CLI):
     (it has no proposal to make); a deterministic *promotion* needs the organs
     pre-configured, which is exactly what an embedding test supplies via
     `components=...` (see `tests/integration/test_cli.py`).
-  * `--provider anthropic|openai` is reserved for Phase 11 (real LLMs); the
-    evolve-family prints a "not implemented until Phase 11" notice and exits.
+  * `--provider anthropic|openai|groq|gemini` wires a real `LLMClient` and the
+    real `Architect` + `Judge` over it — one provider swap, same organs.
 
 `_ensure_incumbent` bootstraps the root incumbent from `--seed <spec.json>`
 zero-LLM (commit as INCUMBENT + set_active) so the very first `evolve` has an
@@ -37,7 +37,7 @@ from pathlib import Path
 
 import archforge.models as m
 from archforge.architect import Architect, ArchitectProtocol, ScriptedArchitect
-from archforge.engine import CycleAborted, CycleResult, Engine, EngineConfig, LoopResult
+from archforge.engine import CycleResult, Engine, EngineConfig, LoopResult
 from archforge.gatekeeper import Gatekeeper
 from archforge.host.base import HostMAS, Task
 from archforge.host.fake import FakeHostMAS
@@ -51,7 +51,7 @@ from archforge.suite import Suite
 from archforge.constants import (
     ALL_PROVIDERS as _PROVIDERS,
     DEFAULT_MODELS, DEFAULT_ROOT_DIR as _DEFAULT_ROOT, DEFAULT_SUITE_ID,
-    DEFAULT_TASK_ID, DEFAULT_TASK_INPUT, PROG,
+    DEFAULT_TASK_ID, DEFAULT_TASK_INPUT, PROG, PROVIDER
 )
 
 
@@ -66,8 +66,9 @@ class Components:
     supply pre-configured fakes (a scripted architect with a queued proposal +
     a scripted judge with per-spec aggregates → a deterministic promotion).
 
-    When `main(..., components=None)` the CLI builds defaults per `--provider`
-    (scripted now; anthropic/openai land in Phase 11).
+    When `main(..., components=None)` the CLI builds defaults per `--provider`:
+    `scripted` builds the inert fakes; a real provider builds the real
+    `Architect` + `Judge` over a real `LLMClient`.
     """
 
     host: HostMAS
@@ -89,7 +90,7 @@ def _add_store_args(p: argparse.ArgumentParser) -> None:
 def _add_evolve_args(p: argparse.ArgumentParser, *, loop: bool) -> None:
     p.add_argument("--seed", metavar="PATH",
                    help="bootstrap the root incumbent from this Spec JSON (no active yet)")
-    p.add_argument("--provider", choices=_PROVIDERS, default="scripted",
+    p.add_argument("--provider", choices=_PROVIDERS, default=PROVIDER,
                    help="LLM provider (default: scripted; anthropic/openai/groq/gemini are real)")
     # real-provider configuration (ignored for 'scripted'). API key/base-url
     # default to the provider SDK's env vars when omitted (ANTHROPIC_API_KEY,
@@ -159,7 +160,7 @@ def _build_parser() -> argparse.ArgumentParser:
     rp = sub.add_parser("report", help="print aggregate deltas across attempts")
     _add_store_args(rp)
 
-    # --- lint (Phase 1) ------------------------------------------------------
+    # --- lint ----------------------------------------------------------------
     lint_p = sub.add_parser("lint", help="run the Spec Linter on a JSON Spec file")
     _add_store_args(lint_p)
     lint_p.add_argument("path", help="path to a Spec JSON file")
@@ -203,8 +204,8 @@ def _default_components(args: argparse.Namespace) -> Components:
     A real provider (`anthropic`/`openai`/`groq`/`gemini`)
     builds ONE `LLMClient` via `make_client` and the REAL `Architect` + `Judge`
     over it — the provider abstraction is the single seam, so neither organ
-    changes when the provider changes. The host stays `FakeHostMAS` in v1 (a real
-    MAS host is its own integration; the seam already accepts it).
+    changes when the provider changes. The host stays `FakeHostMAS` for now
+    (a real MAS host is its own integration; the seam already accepts it).
     """
 
     suite = Suite(suite_id=DEFAULT_SUITE_ID, rubric_id=default_rubric.rubric_id,
@@ -418,7 +419,6 @@ def _print_loop(r: LoopResult) -> int:
 
 
 def _cmd_lint(path: str) -> int:
-    # Minimal, dependency-light implementation; the full CLI surface lands in Phase 9.
     from archforge.models import Spec
 
     spec = Spec.model_validate(json.loads(Path(path).read_text(encoding="utf-8")))
@@ -441,9 +441,10 @@ def main(argv: list[str] | None = None, *,
         components: Components | None = None) -> int:
     """Run the Forge CLI. `components` injects pre-configured organs (tests/embedding).
 
-    When `components` is None the CLI builds them per `--provider` (scripted now,
-    real LLMs in Phase 11). Only the evolve-family consults `components`;
-    `status`/`report`/`approve`/`reject`/`lint` read the stores directly.
+    When `components` is None the CLI builds them per `--provider`: the default
+    `scripted` uses inert fakes; `--provider anthropic|openai|groq|gemini` wires
+    real LLMs. Only the evolve-family consults `components`; `status`/`report`/
+    `approve`/`reject`/`lint` read the stores directly.
     """
 
     parser = _build_parser()
@@ -465,8 +466,8 @@ def main(argv: list[str] | None = None, *,
         return _cmd_evolve(args, components=components, loop=False)
     if args.command == "evolve-loop":
         return _cmd_evolve(args, components=components, loop=True)
-    print(f"[stub] '{args.command}' is not implemented yet.")  # pragma: no cover
-    return 0
+    # argparse rejects unknown subcommands before dispatch, so this is unreachable.
+    return 0  # pragma: no cover
 
 
 if __name__ == "__main__":  # pragma: no cover

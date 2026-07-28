@@ -1,10 +1,10 @@
-"""The Judge — LLM-as-judge scoring of a run (spec §3, §4, §5; Phase 5).
+"""The Judge — LLM-as-judge scoring of a run (spec §3, §4, §5).
 
 `Judge.score(trace, task, rubric_id) -> RunScore` is ONE LLM call that turns a
 trace into a scored verdict: an aggregate, named rubric dimensions, a
 confidence, and a *per-step breakdown* (StepScore[]) naming which agent lost
 which points. The per-step breakdown is the credit-assignment raw material the
-Architect consumes (Phase 6) — but the Judge contains NO diagnosis or proposal
+Architect consumes — but the Judge contains NO diagnosis or proposal
 text; per the locked "keep split" decision it scores only.
 
 `aggregate_scores(...)` turns a list of RunScores (R repeats × N tasks) into a
@@ -70,7 +70,7 @@ class SuiteAggregate(BaseModel):
     n_runs: int
     per_task: dict[str, float] = Field(default_factory=dict)
     confidence: float = 1.0
-    # Set by the SuiteRunner (Phase 7) when too many tasks crashed (spec E4).
+    # Set by the SuiteRunner when too many tasks crashed (spec E4).
     unrunnable: bool = False
 
 

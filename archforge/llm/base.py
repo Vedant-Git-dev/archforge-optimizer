@@ -1,4 +1,4 @@
-"""The LLM client contract (Phase 4).
+"""The LLM client contract.
 
 A provider (∈ {ScriptedLLM, Anthropic, OpenAI}) implements `LLMClient`. The
 Judge and Architect depend on this protocol only, never on a concrete provider.

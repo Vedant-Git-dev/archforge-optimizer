@@ -1,4 +1,4 @@
-"""ScriptedJudge — a deterministic fake `JudgeProtocol` (Phase 5).
+"""ScriptedJudge — a deterministic fake `JudgeProtocol`.
 
 Used by every scenario test that needs a Judge without a real model. It honors
 the same contract as the real Judge and reuses the pure `aggregate_scores`, so
@@ -12,7 +12,7 @@ Scripting hooks (the things scenario tests need):
   * `raise_on_next(...)` -> force the next score() call to raise LLMError (E9)
 
 It records every run it scores, including the per-step breakdown, so the
-Architect (Phase 6) and tests can assert on credit-assignment input. If a run
+Architect and tests can assert on credit-assignment input. If a run
 is unknown and no base/scripted behaviour covers it, it returns a neutral 0.5
 (never silently wrong — tests configure exactly what they need).
 """

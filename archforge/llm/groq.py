@@ -1,4 +1,4 @@
-"""Groq provider — an `LLMClient` over the `groq` SDK (Phase 11).
+"""Groq provider — an `LLMClient` over the `groq` SDK.
 
 Groq runs OpenAI-compatible Chat Completions, so this adapter shares
 `openai_style_complete` with the OpenAI provider; only the SDK client and default

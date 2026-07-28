@@ -1,4 +1,4 @@
-"""Shared helpers for the real-LLM provider adapters (Phase 11).
+"""Shared helpers for the real-LLM provider adapters.
 
 Provider-agnostic plumbing so the four adapters (anthropic/openai/groq/gemini)
 share one JSON-extraction + message-shape logic. None of this touches an SDK at

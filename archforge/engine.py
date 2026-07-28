@@ -1,4 +1,4 @@
-"""The evolve engine — orchestrates one P-E-C cycle and the loop (Phase 9).
+"""The evolve engine — orchestrates one P-E-C cycle and the loop.
 
 This is the "nervous system" that wires the four organs (Architect, SuiteRunner,
 Gatekeeper) plus the stores into a coherent run-over-run loop:
@@ -28,7 +28,6 @@ scripted variants per `--provider` config. Departmental rules honored:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable
 
 from archforge.constants import (
     DEFAULT_MAX_CYCLES, DEFAULT_PLATEAU_CYCLES, DEFAULT_REPEATS,

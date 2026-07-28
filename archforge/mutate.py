@@ -1,4 +1,4 @@
-"""Pure Spec mutations, one per ChangeKind (Phase 6 support).
+"""Pure Spec mutations, one per ChangeKind.
 
 The Architect composes these to build a *concrete* candidate Spec from the
 incumbent (the `Change` record only carries metadata — kind/target/description —

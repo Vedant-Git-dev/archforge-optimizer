@@ -1,4 +1,4 @@
-"""Anthropic provider — an `LLMClient` over the `anthropic` SDK (Phase 11).
+"""Anthropic provider — an `LLMClient` over the `anthropic` SDK.
 
 The SDK is imported lazily inside `__init__`, so importing this module (and thus
 `archforge.llm`) never requires the package to be installed — only an actual run

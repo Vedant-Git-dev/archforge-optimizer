@@ -1,8 +1,7 @@
 [project]
 name = "archforge"
-version = "0.1.0"
+dynamic = ["version"]
 description = "ArchForge — a self-improving meta-layer over multi-agent systems"
-readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.7",
@@ -15,6 +14,7 @@ dev = [
     "hypothesis>=6",
     "ruff>=0.5",
     "mypy>=1.11",
+    "python-dotenv"
 ]
 # Real LLM providers — install only the one(s) you run. None are required to
 # import or test the package; adapters import lazily and self-skip when absent.
@@ -32,6 +32,12 @@ providers = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+# Single source of truth: the package version is read from archforge.constants,
+# which is also re-exported as `archforge.__version__`. Edit VERSION there only.
+path = "archforge/constants.py"
+pattern = 'VERSION:\s*str\s*=\s*"(?P<version>[^"]+)"'
 
 [tool.hatch.build.targets.wheel]
 packages = ["archforge"]

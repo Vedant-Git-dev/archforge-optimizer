@@ -1,4 +1,4 @@
-"""The Architect — the P-E-C "Propose" step (spec §3, §4, §6; Phase 6).
+"""The Architect — the P-E-C "Propose" step (spec §3, §4, §6).
 
 One cycle, one change. `next_attempt(...)` returns an `ArchitectResult`:
 
@@ -12,13 +12,13 @@ One cycle, one change. `next_attempt(...)` returns an `ArchitectResult`:
 
 Boundaries that keep the optimizer safe:
   * The Architect is WRITE-FREE over stores. It READS AttemptStore for dedup
-    (E7) but never appends an Attempt — the orchestrator (Phase 9) does that, so
+    (E7) but never appends an Attempt — the orchestrator does that, so
     proposal and commitment stay cleanly separated.
   * `Change` is the persisted *metadata* (kind/target/diff/rationale/scope); the
     concrete edit lives in the candidate Spec returned alongside it, built with
     `archforge.mutate`. dedup keys off (parent, kind, target).
-  * Structural change kinds auto-tag `scope=STRUCTURAL` (Phase 1 source of
-    truth) — that tag, not the Architect, drives the hybrid gate (I4).
+  * Structural change kinds auto-tag `scope=STRUCTURAL` (defined in
+    archforge.models) — that tag, not the Architect, drives the hybrid gate (I4).
 
 The real `Architect` spends ONE LLM call per cycle (the locked budget); the
 `ScriptedArchitect` decides the proposal deterministically for tests.
@@ -43,7 +43,7 @@ from archforge.stores.attempt_store import AttemptStore
 
 
 class CreditAssignment(BaseModel):
-    """The node/route blamed for the incumbent's rubric loss (Phase 6 input)."""
+    """The node/route blamed for the incumbent's rubric loss (Architect/credit-assignment input)."""
 
     model_config = ConfigDict(extra="forbid")
 

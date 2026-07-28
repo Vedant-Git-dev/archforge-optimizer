@@ -1,4 +1,4 @@
-"""FakeHostMAS — a deterministic, scriptable stand-in for a real MAS (Phase 3+).
+"""FakeHostMAS — a deterministic, scriptable stand-in for a real MAS.
 
 Used by the SuiteRunner and every E2E scenario / smoke test so the optimizer
 runs end-to-end **without any real LLM**. It is deliberately simple but honours

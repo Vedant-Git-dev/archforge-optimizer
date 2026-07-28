@@ -1,4 +1,4 @@
-"""ScriptedLLM — a programmable, deterministic fake `LLMClient` (Phase 4).
+"""ScriptedLLM — a programmable, deterministic fake `LLMClient`.
 
 This is what makes every "thinking" component testable without a real model.
 
