@@ -13,19 +13,6 @@ a value here takes effect everywhere it's used; renaming a symbol requires a
 find/replace across its consumers. Values the package treats as user preferences
 (optimization policy, providers, rubric) sit at the top; wiring internals sit at
 the bottom under "Internals — not for tuning".
-
-== What stays OUT of this file (and why) ==
-  * Enums (`EdgeType`, `ChangeKind`, `Scope`, `Verdict`, `SpecStatus`, `Role`,
-    `Action`) — domain identity types; their consumers are everywhere.
-  * `STRUCTURAL_KINDS` (models.py) and `_BLOCKING_VERDICTS` (attempt_store) —
-    frozensets over those enums, consumed *inside* the same module; centralizing
-    them would either create an import cycle (constants → models → constants) or
-    force string-typed sets. Their *rule* lives with the model that owns them.
-  * `Rubric` model + the `default_rubric` instance (judge/base) — a Pydantic
-    model; its *content* (id + sub-rubrics) IS centralized below, but the
-    instance is built where `Rubric` is defined so `from … import default_rubric`
-    keeps working.
-  * `mutate.APPLY` dispatch — runtime wiring, not a constant.
 """
 
 from __future__ import annotations
@@ -60,10 +47,9 @@ PROVIDER="gemini"
 DEFAULT_MODELS: dict[str, str] = {
     "anthropic": "claude-sonnet-5",
     "openai": "gpt-4o",
-    "groq": "llama-3.3-70b-versatile",
+    "groq": "openai/gpt-oss-120b",
     "gemini": "gemini-2.5-flash",
 }
-
 
 # =========================================================================== #
 # Optimization policy — the P-E-C knobs a user tunes most

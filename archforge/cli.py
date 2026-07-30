@@ -30,6 +30,7 @@ Gatekeeper (invariant I1); the CLI never mutates the pointer itself.
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import sys
 from dataclasses import dataclass
@@ -77,6 +78,38 @@ class Components:
     suite: Suite
 
 
+def _import_adapter(dotted: str) -> HostMAS:
+    """Import an external MAS adapter from a ``module:Class`` (or ``module``)
+    dotted path and instantiate it. The class implements ``HostMAS`` (the kit's
+    ``BaseHostAdapter`` does), so it drops straight in as ``components.host`` —
+    its own ``__init__`` carries whatever its MAS needs (Lumina loads its base
+    prompts; a framework adapter wraps its graph). No PR into core to adapt a
+    new MAS: ``--adapter mypkg:MyAdapter`` wires it; ``--provider`` keeps the
+    Architect/Judge organs, ``--seed`` the bootstrap Spec."""
+    if ":" in dotted:
+        modpath, cls = dotted.split(":", 1)
+    else:
+        modpath, cls = dotted, ""
+    module = importlib.import_module(modpath)
+    if not cls:
+        # Bare module: expect it to expose a ``HostMAS``-protocol attr named
+        # ``HostMAS`` or the last path segment; else error loudly.
+        cls = "HostMAS"
+    try:
+        obj = getattr(module, cls)
+    except AttributeError as exc:
+        raise SystemExit(
+            f"--adapter: module {modpath!r} has no attribute {cls!r}. "
+            f"Pass it as `module:ClassName`."
+        ) from exc
+    if isinstance(obj, type):
+        return obj()                 # a HostMAS/BaseHostAdapter subclass → instance
+    if isinstance(obj, HostMAS):
+        return obj                   # already an instance
+    raise SystemExit(f"--adapter: {dotted!r} resolved to a {type(obj).__name__}, "
+                     "not a HostMAS subclass or instance.")
+
+
 # --------------------------------------------------------------------------- #
 # arg parsing
 # --------------------------------------------------------------------------- #
@@ -90,6 +123,10 @@ def _add_store_args(p: argparse.ArgumentParser) -> None:
 def _add_evolve_args(p: argparse.ArgumentParser, *, loop: bool) -> None:
     p.add_argument("--seed", metavar="PATH",
                    help="bootstrap the root incumbent from this Spec JSON (no active yet)")
+    p.add_argument("--adapter", metavar="DOTTED.PATH[:Class]",
+                   help="import an external MAS adapter (a HostMAS/BaseHostAdapter "
+                        "subclass) as the runtime host; pair with --provider for the "
+                        "Architect/Judge organs. e.g. --adapter archforge_glue:LuminaAdapter")
     p.add_argument("--provider", choices=_PROVIDERS, default=PROVIDER,
                    help="LLM provider (default: scripted; anthropic/openai/groq/gemini are real)")
     # real-provider configuration (ignored for 'scripted'). API key/base-url
@@ -377,6 +414,15 @@ def _cmd_evolve(args: argparse.Namespace, *, components: Components | None,
         return 1
 
     organs = components or _default_components(args)
+
+    # --adapter: swap the runtime host for an external MAS adapter (a HostMAS /
+    # BaseHostAdapter) while keeping the --provider organs (Architect/Judge).
+    # This is the "adapt any MAS" seam: point at an adapter class, no core edit.
+    adapter_path = getattr(args, "adapter", None)
+    if adapter_path:
+        organs = Components(host=_import_adapter(adapter_path), judge=organs.judge,
+                            architect=organs.architect, suite=organs.suite)
+
     engine = Engine(
         host=organs.host, judge=organs.judge, architect=organs.architect,
         spec_store=specs, attempt_store=atts, trace_store=traces,

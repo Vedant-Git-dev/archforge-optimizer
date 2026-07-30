@@ -1,0 +1,24 @@
+"""archforge.host.adapters — the reusable adapter kit.
+
+The single place a new MAS author looks: subclass `BaseHostAdapter` + a small
+`BaseAgent` per node, fill `call()` (the node's real work), and override the
+hooks (`execution_order` / `resolve_prompt` / `stage_context`) only when the
+MAS's data-shaping is non-default. The kit owns the run loop, content-decouple,
+config-decay, perf, and partial-trace flush — the recurring scaffolding every
+adapter previously re-derived.
+
+`helpers` is also re-exported so an author extending the loop's primitives
+(topo order, run-id, config decay) does so against one source.
+"""
+from archforge.host.adapters.base import (
+    BaseAgent, BaseHostAdapter, BasePipeline, CallResult, RunContext,
+)
+from archforge.host.adapters.helpers import (
+    KnobVote, cfg_as_kwargs, cfg_decay, estimate_tokens, run_id, topo_order,
+)
+
+__all__ = [
+    "BaseHostAdapter", "BaseAgent", "BasePipeline", "CallResult", "RunContext",
+    "run_id", "topo_order", "cfg_decay", "cfg_as_kwargs", "KnobVote",
+    "estimate_tokens",
+]

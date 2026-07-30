@@ -23,8 +23,9 @@ import hashlib
 from collections import defaultdict
 from typing import Callable
 
-from archforge.constants import SHORT_HASH_LEN
 import archforge.models as m
+from archforge.constants import SHORT_HASH_LEN
+from archforge.host.adapters.helpers import run_id as _run_id, topo_order as _topo_order
 from archforge.host.base import Agent, AgentResponse, HostMAS, Runnable, Task
 from archforge.middleware import TracingMiddleware
 
@@ -225,50 +226,9 @@ class FakeHostMAS:
         return FakePipeline(spec, middleware, agents)
 
 
-# --------------------------------------------------------------------------- #
-# helpers
-# --------------------------------------------------------------------------- #
-
-
-def _topo_order(spec: m.Spec) -> list[str]:
-    """Kahn's algorithm over the (assumed lint-clean, acyclic) Spec graph.
-
-    Roots (no in-edges) are placed first; frontier ties broken by node insertion
-    order so the result is stable across runs — important for deterministic traces.
-    """
-
-    ids = [n.node_id for n in spec.nodes]
-    adjacency: dict[str, list[str]] = defaultdict(list)
-    indegree: dict[str, int] = {nid: 0 for nid in ids}
-    for e in spec.edges:
-        if e.from_ == e.to:
-            continue
-        adjacency[e.from_].append(e.to)
-        indegree[e.to] += 1
-    order_index = {nid: i for i, nid in enumerate(ids)}
-    ready = sorted((nid for nid in ids if indegree[nid] == 0), key=lambda n: order_index[n])
-    out: list[str] = []
-    while ready:
-        n = ready.pop(0)
-        out.append(n)
-        for nxt in adjacency.get(n, []):
-            indegree[nxt] -= 1
-            if indegree[nxt] == 0:
-                ready.append(nxt)
-        ready.sort(key=lambda n: order_index[n])
-    return out
-
-
-def _run_id(spec_id: str, task_id: str, counter: int) -> str:
-    """A unique, human-readable run_id: <spec hash>-<task>-<seq>.
-
-    Uniqueness comes from the per-pipeline `counter` (one increment per `run()`),
-    so two repeats of the same (spec, task) — and two candidates that share a
-    spec — never collide. Determinism within a run comes from the spec/task hash.
-    """
-
-    h = hashlib.sha256(f"{spec_id}|{task_id}".encode()).hexdigest()[:SHORT_HASH_LEN]
-    return f"{h}-{task_id}-{counter:04d}"
+# ``topo_order`` and ``run_id`` now live in ``archforge.host.adapters.helpers``
+# (single source for the kit + this module). They are re-imported at the top as
+# ``_topo_order`` / ``_run_id`` so the call sites below are unchanged.
 
 
 __all__ = ["FakeHostMAS", "FakeAgent", "FakePipeline", "CrashOnCall"]
