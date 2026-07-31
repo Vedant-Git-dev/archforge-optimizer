@@ -9,10 +9,10 @@ The construction mirrors the proven ``LuminaAI/archforge_glue/live_loop.py``
 path — the same organs, stores, seeding, and budget caps — factored once so
 every external adapter reuses it instead of re-deriving ~150 lines of wiring.
 
-Env priority (documented): an explicit ``config.api_key`` > a real process env
-var > a ``.env`` file (loaded with ``setdefault`` so a real env var always
-wins). The kit keeps no hard dependency on ``python-dotenv`` — a flat stdlib
-parser covers ``.env``; absent file is a no-op.
+Env priority (documented): an explicit ``api_key`` > a real process env var >
+a ``.env`` file (loaded via ``archforge.config.load_env`` with ``setdefault`` so
+a real env var always wins). The loader is stdlib-only — no hard dependency on
+``python-dotenv``; an absent file is a no-op.
 """
 from __future__ import annotations
 
@@ -22,39 +22,15 @@ from pathlib import Path
 
 import archforge.models as m
 from archforge.architect import Architect
+from archforge.config import (
+    DEFAULT_ENV_FILE, DEFAULT_MAX_TOKENS_PER_CYCLE, DEFAULT_MAX_TOKENS_TOTAL,
+    DEFAULT_ROOT_DIR, DEFAULT_RUBRIC_ID, PROVIDER, load_env,
+)
 from archforge.engine import CycleResult, Engine, EngineConfig, LoopResult
 from archforge.judge.base import Judge, default_rubric
 from archforge.llm import make_client
 from archforge.stores import AttemptStore, SpecStore, TraceStore
 from archforge.suite import Suite
-
-
-# --------------------------------------------------------------------------- #
-# .env loader (stdlib-only; no python-dotenv dependency on core)
-# --------------------------------------------------------------------------- #
-
-
-def _load_env(path: str | os.PathLike[str] | None = ".env") -> None:
-    """Populate ``os.environ`` from a flat ``KEY=VALUE`` file via ``setdefault``.
-
-    A real process env var therefore always wins; a passed ``api_key`` (handed
-    straight to the SDK in ``make_client``) wins above both. Skips blank and
-    ``#``-comment lines; strips optional surrounding ``"``/``'`` on values.
-    No-op if the file is missing.
-    """
-    if not path:
-        return
-    p = Path(path)
-    if not p.exists():
-        return
-    for raw in p.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        key = key.strip()
-        val = val.strip().strip("'").strip('"')
-        os.environ.setdefault(key, val)
 
 
 # --------------------------------------------------------------------------- #
@@ -68,24 +44,24 @@ class RunnerConfig:
 
     # LLM provider for the Architect + Judge (NOT for the host's own agents —
     # those keep whatever provider the adapter wires, per the design's split).
-    provider: str = "gemini"
+    provider: str = PROVIDER
     architect_model: str | None = None    # None → provider default
     judge_model: str | None = None
     api_key: str | None = None
     base_url: str | None = None
-    rubric: str = "default-v1"
-    env_file: str | None = ".env"
+    rubric: str = DEFAULT_RUBRIC_ID
+    env_file: str | None = DEFAULT_ENV_FILE
 
     # loop / budget
     tau: float = m.DEFAULT_TAU
     max_cycles: int = EngineConfig().max_cycles
     repeats: int = EngineConfig().repeats
-    max_tokens_per_cycle: int | None = None
-    max_tokens_total: int | None = None
+    max_tokens_per_cycle: int | None = DEFAULT_MAX_TOKENS_PER_CYCLE
+    max_tokens_total: int | None = DEFAULT_MAX_TOKENS_TOTAL
     plateau_cycles: int = EngineConfig().plateau_cycles
 
     # persistence (a directory, NOT a tmp path — reruns continue evolving)
-    storage_root: str | os.PathLike[str] = ".archforge"
+    storage_root: str | os.PathLike[str] = DEFAULT_ROOT_DIR
 
 
 # --------------------------------------------------------------------------- #
@@ -105,9 +81,9 @@ def _build_organs(cfg: RunnerConfig):
             "use the CLI's --provider scripted path or supply scripted organs "
             "directly to Engine."
         )
-    _load_env(cfg.env_file)
+    load_env(cfg.env_file)
     llm = make_client(cfg.provider, api_key=cfg.api_key, base_url=cfg.base_url)
-    from archforge.constants import DEFAULT_MODELS
+    from archforge.config import DEFAULT_MODELS
     arch = Architect(llm, model=cfg.architect_model or DEFAULT_MODELS[cfg.provider])
     judge = Judge(llm, model=cfg.judge_model or DEFAULT_MODELS[cfg.provider],
                   rubric=default_rubric if cfg.rubric == "default-v1" else cfg.rubric)
@@ -165,4 +141,4 @@ def run_cycle(
     return engine.evolve_cycle(cycle=0)
 
 
-__all__ = ["RunnerConfig", "run_cycle", "run_loop", "_load_env"]
+__all__ = ["RunnerConfig", "run_cycle", "run_loop"]

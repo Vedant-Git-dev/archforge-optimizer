@@ -24,7 +24,7 @@ from collections import defaultdict
 from typing import Callable
 
 import archforge.models as m
-from archforge.constants import SHORT_HASH_LEN
+from archforge.config import SHORT_HASH_LEN
 from archforge.host.adapters.helpers import run_id as _run_id, topo_order as _topo_order
 from archforge.host.base import Agent, AgentResponse, HostMAS, Runnable, Task
 from archforge.middleware import TracingMiddleware

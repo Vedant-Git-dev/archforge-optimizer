@@ -24,7 +24,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from archforge.constants import (
+from archforge.config import (
     ACTIVE_POINTER_FILE, ARCHIVED_FILE, SPECS_DIRNAME,
 )
 from archforge.models import Spec, SpecStatus

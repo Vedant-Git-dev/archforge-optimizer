@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from archforge.constants import ALL_PROVIDERS, REAL_PROVIDERS
+from archforge.config import ALL_PROVIDERS, REAL_PROVIDERS
 from archforge.llm.base import (
     Completion,
     LLMClient,
@@ -29,7 +29,7 @@ from archforge.llm.base import (
 from archforge.llm.scripted import ScriptedLLM
 
 # `REAL_PROVIDERS` / `ALL_PROVIDERS` are re-exported (below in __all__) straight
-# from archforge.constants — the single source of truth the CLI also imports.
+# from archforge.config — the single source of truth the CLI also imports.
 
 
 def make_client(provider: str, **kwargs: Any) -> LLMClient:

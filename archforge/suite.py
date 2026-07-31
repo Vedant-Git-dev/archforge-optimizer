@@ -24,7 +24,7 @@ from typing import Callable
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from archforge.constants import (
+from archforge.config import (
     BACKOFF_CAP_SECONDS, DEFAULT_JUDGE_RETRIES, DEFAULT_UNRUNNABLE_FRAC,
 )
 import archforge.models as m

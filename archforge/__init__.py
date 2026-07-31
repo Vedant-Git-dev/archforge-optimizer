@@ -57,7 +57,7 @@ from archforge.spec_builder import (
 # ── the run entrypoint (runner.py) — wraps the Engine for embedders.
 from archforge.runner import RunnerConfig, run_cycle, run_loop
 
-from archforge.constants import VERSION as __version__  # noqa: F401  (public API)
+from archforge.config import VERSION as __version__  # noqa: F401  (public API)
 
 __all__ = [
     # contract

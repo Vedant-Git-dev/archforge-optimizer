@@ -5,3 +5,7 @@ data/
 .env
 *.txt
 tests/
+
+# Keep the user-editable config (archforge.py) trackable though.
+.archforge/*
+!.archforge/archforge.py

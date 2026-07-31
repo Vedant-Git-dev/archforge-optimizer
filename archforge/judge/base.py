@@ -19,7 +19,7 @@ from typing import Protocol, Sequence, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from archforge.constants import DEFAULT_RUBRIC_ID, DEFAULT_SUB_RUBRICS
+from archforge.config import DEFAULT_RUBRIC_ID, DEFAULT_SUB_RUBRICS
 import archforge.models as m
 from archforge.host.base import Task
 from archforge.llm.base import LLMClient, LLMError, Message, Role

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from archforge.constants import SCRIPTED_NOISE_PATTERN
+from archforge.config import SCRIPTED_NOISE_PATTERN
 import archforge.models as m
 from archforge.host.base import Task
 from archforge.judge.base import JudgeProtocol, Rubric, SuiteAggregate, aggregate_scores, default_rubric

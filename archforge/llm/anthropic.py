@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-from archforge.constants import ANTHROPIC_DEFAULT_MAX_TOKENS, DEFAULT_MODELS
+from archforge.config import ANTHROPIC_DEFAULT_MAX_TOKENS, DEFAULT_MODELS
 from archforge.llm._common import extract_json, split_system
 from archforge.llm.base import Completion, LLMError, Message, Usage
 

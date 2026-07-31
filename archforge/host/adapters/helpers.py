@@ -8,7 +8,7 @@ These were lifted from two as-built implementations so the kit has ONE copy:
     "thread model/temp/max_tokens always, system_prompt only when mutated" rule).
 
 This module is a pure leaf: it imports only `archforge.models` /
-`archforge.constants`, so importing it from `host/fake.py` (or any adapter)
+`archforge.config`, so importing it from `host/fake.py` (or any adapter)
 cannot form a cycle.
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import archforge.models as m
-from archforge.constants import SHORT_HASH_LEN
+from archforge.config import SHORT_HASH_LEN
 
 
 # --------------------------------------------------------------------------- #

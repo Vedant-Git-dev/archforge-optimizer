@@ -18,7 +18,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from archforge.constants import (
+from archforge.config import (
     DEFAULT_DELTA, DEFAULT_PLATEAU_CYCLES, DEFAULT_REPEATS, DEFAULT_TAU,
     DEFAULT_UNRUNNABLE_FRAC, MAX_REPEATS, SPEC_ID_HASH_LEN,
 )

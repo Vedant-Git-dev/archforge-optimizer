@@ -14,7 +14,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from archforge.constants import ATTEMPTS_DIRNAME, SPEC_ID_HASH_LEN
+from archforge.config import ATTEMPTS_DIRNAME, SPEC_ID_HASH_LEN
 from archforge.models import Attempt, SuiteResult, Verdict
 from archforge.stores._jsonl import append_jsonl, read_jsonl, write_jsonl
 

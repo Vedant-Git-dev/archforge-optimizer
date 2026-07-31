@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from archforge.constants import DEFAULT_MODELS
+from archforge.config import DEFAULT_MODELS
 from archforge.llm._common import openai_style_complete
 from archforge.llm.base import Completion, LLMError, Message
 

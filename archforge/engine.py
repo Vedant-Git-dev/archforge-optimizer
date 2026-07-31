@@ -29,8 +29,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from archforge.constants import (
-    DEFAULT_MAX_CYCLES, DEFAULT_PLATEAU_CYCLES, DEFAULT_REPEATS,
+from archforge.config import (
+    DEFAULT_JUDGE_RETRIES, DEFAULT_MAX_CYCLES, DEFAULT_MAX_TOKENS_PER_CYCLE,
+    DEFAULT_MAX_TOKENS_TOTAL, DEFAULT_PLATEAU_CYCLES, DEFAULT_REPEATS,
 )
 import archforge.models as m
 from archforge.architect import ArchitectProtocol, ArchitectResult
@@ -102,8 +103,8 @@ class EngineConfig:
     """Tunables for the loop (Beyond thresholds, which live in m.Thresholds)."""
 
     max_cycles: int = DEFAULT_MAX_CYCLES
-    max_tokens_per_cycle: int | None = None      # E3 budget cap (None = unbounded)
-    max_tokens_total: int | None = None
+    max_tokens_per_cycle: int | None = DEFAULT_MAX_TOKENS_PER_CYCLE  # E3 cap (None=∞)
+    max_tokens_total: int | None = DEFAULT_MAX_TOKENS_TOTAL
     repeats: int = DEFAULT_REPEATS                # R (adaptive engine raises it)
     plateau_cycles: int = DEFAULT_PLATEAU_CYCLES  # K consecutive no-promotion (E8)
 
@@ -138,7 +139,8 @@ class Engine:
         self._th = thresholds or m.Thresholds()
         self._cfg = config or EngineConfig()
         self._runner = SuiteRunner(host, judge, trace_store,
-                                    epsilon=self._th.unrunnable_frac, judge_retries=2)
+                                    epsilon=self._th.unrunnable_frac,
+                                    judge_retries=DEFAULT_JUDGE_RETRIES)
         self._gatekeeper = Gatekeeper(spec_store, attempt_store, thresholds=self._th)
         # baseline cache: incumbent_suite_run keyed by spec_id (stable until rubric changes)
         self._baseline_cache: dict[str, SuiteRun] = {}

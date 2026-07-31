@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from archforge.constants import TRACES_DIRNAME
+from archforge.config import TRACES_DIRNAME
 from archforge.models import Trace
 from archforge.stores._jsonl import append_jsonl, read_jsonl
 

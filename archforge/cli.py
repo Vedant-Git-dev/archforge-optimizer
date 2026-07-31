@@ -3,13 +3,13 @@
 Wires the four organs (Architect, SuiteRunner, Judge, Gatekeeper) plus the
 filesystem stores into the runnable surface the user actually touches:
 
-    archforge lint <spec.json>                 validate a Spec
-    archforge evolve  [--root R] [--seed S]    one Propose-Evaluate-Commit cycle
-    archforge evolve-loop [...]                repeat until budget cap or plateau
-    archforge approve [<id>...|--all]          drain the structural-change queue
-    archforge reject <id>                      reject a queued change (active kept)
-    archforge status                           incumbent Spec + lineage + counts
-    archforge report                           aggregate deltas across attempts
+    archforge-optimizer lint <spec.json>       validate a Spec
+    archforge-optimizer evolve  [--root R] [--seed S]   one Propose-Evaluate-Commit cycle
+    archforge-optimizer evolve-loop [...]      repeat until budget cap or plateau
+    archforge-optimizer approve [<id>...|--all]   drain the structural-change queue
+    archforge-optimizer reject <id>            reject a queued change (active kept)
+    archforge-optimizer status                 incumbent Spec + lineage + counts
+    archforge-optimizer report                 aggregate deltas across attempts
 
 Provider seam (the single place "real vs fake" lives at the CLI):
   * `--provider scripted` (default) builds the zero-cost fakes — `FakeHostMAS`,
@@ -47,12 +47,15 @@ from archforge.judge.base import Judge, JudgeProtocol, default_rubric
 from archforge.lint import lint
 from archforge.stores import AttemptStore, SpecStore, TraceStore
 from archforge.suite import Suite
+from archforge.config_init import archforge_config_text, env_example_text
 
-# Project-wide constants — single source of truth in archforge.constants.
-from archforge.constants import (
+# Project-wide config — single source of truth in archforge.config.
+from archforge.config import (
     ALL_PROVIDERS as _PROVIDERS,
-    DEFAULT_MODELS, DEFAULT_ROOT_DIR as _DEFAULT_ROOT, DEFAULT_SUITE_ID,
-    DEFAULT_TASK_ID, DEFAULT_TASK_INPUT, PROG, PROVIDER
+    DEFAULT_DELTA, DEFAULT_ENV_FILE, DEFAULT_MAX_CYCLES, DEFAULT_MAX_TOKENS_PER_CYCLE,
+    DEFAULT_MAX_TOKENS_TOTAL, DEFAULT_MODELS, DEFAULT_PLATEAU_CYCLES, DEFAULT_REPEATS,
+    DEFAULT_ROOT_DIR as _DEFAULT_ROOT, DEFAULT_SUITE_ID, DEFAULT_TAU, DEFAULT_TASK_ID,
+    DEFAULT_TASK_INPUT, PROG, PROVIDER, load_env,
 )
 
 
@@ -129,30 +132,33 @@ def _add_evolve_args(p: argparse.ArgumentParser, *, loop: bool) -> None:
                         "Architect/Judge organs. e.g. --adapter archforge_glue:LuminaAdapter")
     p.add_argument("--provider", choices=_PROVIDERS, default=PROVIDER,
                    help="LLM provider (default: scripted; anthropic/openai/groq/gemini are real)")
-    # real-provider configuration (ignored for 'scripted'). API key/base-url
-    # default to the provider SDK's env vars when omitted (ANTHROPIC_API_KEY,
-    # OPENAI_API_KEY, GROQ_API_KEY, GOOGLE_API_KEY/GEMINI_API_KEY).
-    p.add_argument("--api-key", default=None, help="provider API key (else read from env)")
+    # API keys: a `.env` in the cwd is loaded first (load_env, setdefault ∴ real env
+    # wins), then the provider SDK reads its key var; --api-key overrides both. The
+    # key var name lives in archforge.config (see load_env + DEFAULT_MODELS).
+    p.add_argument("--env-file", default=DEFAULT_ENV_FILE,
+                   help="load provider API keys from this file before --provider "
+                        "builds the organs (default: .env in the cwd; no-op if absent)")
+    p.add_argument("--api-key", default=None, help="provider API key (overrides .env/env)")
     p.add_argument("--base-url", default=None, help="provider base URL override")
     p.add_argument("--architect-model", default=None,
                    help="model id for the Architect (else the provider default)")
     p.add_argument("--judge-model", default=None,
                    help="model id for the Judge (else the provider default)")
-    # thresholds
-    p.add_argument("--tau", type=float, default=m.Thresholds().tau,
+    # thresholds — every default sourced from archforge.config (single source)
+    p.add_argument("--tau", type=float, default=DEFAULT_TAU,
                    help="promotion margin τ (default: %(default)s)")
-    p.add_argument("--delta", type=float, default=m.Thresholds().delta,
+    p.add_argument("--delta", type=float, default=DEFAULT_DELTA,
                    help="regression floor δ (default: %(default)s)")
-    p.add_argument("--repeats", type=int, default=1,
-                   help="R: repeats per task (default: 1)")
+    p.add_argument("--repeats", type=int, default=DEFAULT_REPEATS,
+                   help="R: repeats per task (default: %(default)s)")
     if loop:
-        p.add_argument("--max-cycles", type=int, default=EngineConfig().max_cycles,
+        p.add_argument("--max-cycles", type=int, default=DEFAULT_MAX_CYCLES,
                        help="cap on P-E-C cycles (default: %(default)s)")
-        p.add_argument("--plateau-cycles", type=int, default=EngineConfig().plateau_cycles,
+        p.add_argument("--plateau-cycles", type=int, default=DEFAULT_PLATEAU_CYCLES,
                        help="K consecutive no-promotion cycles → plateau (default: %(default)s)")
-        p.add_argument("--max-tokens-total", type=int, default=None,
+        p.add_argument("--max-tokens-total", type=int, default=DEFAULT_MAX_TOKENS_TOTAL,
                        help="total token budget cap; stop at or before reaching it (E3)")
-    p.add_argument("--max-tokens-per-cycle", type=int, default=None,
+    p.add_argument("--max-tokens-per-cycle", type=int, default=DEFAULT_MAX_TOKENS_PER_CYCLE,
                    help="per-cycle token cap; abort mid-cycle if exceeded (E3)")
 
 
@@ -201,6 +207,13 @@ def _build_parser() -> argparse.ArgumentParser:
     lint_p = sub.add_parser("lint", help="run the Spec Linter on a JSON Spec file")
     _add_store_args(lint_p)
     lint_p.add_argument("path", help="path to a Spec JSON file")
+
+    # --- init (scaffold user config) -----------------------------------------
+    init_p = sub.add_parser("init",
+                            help="scaffold .archforge/archforge.py + .env.example for this project")
+    _add_store_args(init_p)   # --root selects where archforge.py is written
+    init_p.add_argument("--force", action="store_true",
+                        help="overwrite an existing .archforge/archforge.py")
 
     return parser
 
@@ -312,7 +325,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
     specs, atts, _ = _stores(args.root)
     active_id = specs.active_id()
     if active_id is None:
-        print("No incumbent yet. Bootstrap with `archforge evolve --seed <spec.json>`.")
+        print("No incumbent yet. Bootstrap with `archforge-optimizer evolve --seed <spec.json>`.")
         return 0
     spec = specs.get(active_id)
     print("active incumbent:")
@@ -398,6 +411,11 @@ def _cmd_evolve(args: argparse.Namespace, *, components: Components | None,
     # Injected `components` (the test/embedding path) always win — they ARE the
     # scripted organs, by contract. Otherwise build organs per `--provider`:
     # a real provider now wires the REAL Architect + Judge over a real LLMClient.
+    if components is None:
+        # Load API keys from a `.env` in the cwd (setdefault ∴ real env wins;
+        # --api-key passed to make_client wins above both). No-op if the file is
+        # missing or for --provider scripted (no keys needed).
+        load_env(getattr(args, "env_file", None))
     if components is None and args.provider != "scripted":
         try:
             components = _default_components(args)           # builds a real LLMClient
@@ -410,7 +428,7 @@ def _cmd_evolve(args: argparse.Namespace, *, components: Components | None,
     active = _ensure_incumbent(args, specs)
     if active is None:
         print("No active incumbent and no --seed given; bootstrap with "
-              "`archforge evolve --seed <spec.json>` first.", file=sys.stderr)
+              "`archforge-optimizer evolve --seed <spec.json>` first.", file=sys.stderr)
         return 1
 
     organs = components or _default_components(args)
@@ -436,14 +454,14 @@ def _cmd_evolve(args: argparse.Namespace, *, components: Components | None,
 
 def _print_cycle(r: CycleResult) -> int:
     if not r.attempted:
-        print(f"archforge evolve: cycle={r.cycle} attempted=false action=none "
+        print(f"{PROG} evolve: cycle={r.cycle} attempted=false action=none "
               f"note={r.note}")
         return 0
     action = r.decision.action.value if r.decision else "none"
     inc = f"{r.incumbent_mean:.3f}" if r.incumbent_mean is not None else "-"
     cand = f"{r.candidate_mean:.3f}" if r.candidate_mean is not None else "-"
     margin = f"{r.decision.margin:+.3f}" if r.decision else "-"
-    print(f"archforge evolve: cycle={r.cycle} attempted=true action={action} "
+    print(f"{PROG} evolve: cycle={r.cycle} attempted=true action={action} "
           f"margin={margin} incumbent_mean={inc} candidate_mean={cand} "
           f"promoted={'true' if r.promoted else 'false'} "
           f"queued={'true' if r.queued else 'false'} "
@@ -454,7 +472,7 @@ def _print_cycle(r: CycleResult) -> int:
 
 
 def _print_loop(r: LoopResult) -> int:
-    print(f"archforge evolve-loop: cycles_run={r.cycles_run} promotions={r.promotions} "
+    print(f"{PROG} evolve-loop: cycles_run={r.cycles_run} promotions={r.promotions} "
           f"queued={r.queued} plateaued={'true' if r.plateaued else 'false'} "
           f"aborted={'true' if r.aborted else 'false'} "
           f"final_incumbent={r.final_incumbent_id} "
@@ -476,6 +494,47 @@ def _cmd_lint(path: str) -> int:
         loc = f" [{e.location}]" if e.location else ""
         print(f"{e.code}{loc}: {e.message}")
     return 1
+
+
+def _cmd_init(args: argparse.Namespace) -> int:
+    """Scaffold `.archforge/archforge.py` (user-editable config) + `.env.example`
+    (repo root). Never touches a real `.env`. Refuses to clobber an existing
+    `archforge.py` unless `--force`; never overwrites an existing `.env.example`."""
+    root = Path(args.root or _DEFAULT_ROOT)
+    cfg_path = root / "archforge.py"
+
+    # 1. archforge.py — refuse-clobber unless --force.
+    if cfg_path.exists() and not args.force:
+        print(f"! {cfg_path} already exists. Re-run with --force to overwrite "
+              "(your edits would be lost).", file=sys.stderr)
+        return 2
+    root.mkdir(parents=True, exist_ok=True)        # .archforge/ (also the run state dir)
+    cfg_path.write_text(archforge_config_text(), encoding="utf-8")
+    print(f"created: {cfg_path}  (uncomment/edit a value to override shipped defaults)")
+
+    # 2. .env.example — create once at the repo root (cwd), never overwrite.
+    env_example = Path(".env.example")
+    if env_example.exists():
+        print(f"kept:    {env_example}  (already present — left untouched)")
+    else:
+        env_example.write_text(env_example_text(), encoding="utf-8")
+        print(f"created: {env_example}  (copy to .env and fill in your API keys)")
+    print(f"\nNext: edit {cfg_path}, then run `{PROG} evolve --seed <spec.json>`.")
+    return 0
+
+
+def _maybe_config_hint(args: argparse.Namespace) -> None:
+    """One-time stderr advisory when a user runs an evolve-family command with no
+    project config in place. Only fires when auto-load is off (pytest /
+    ARCHFORGE_CONFIG_DISABLE) AND `.archforge/archforge.py` is absent — so it never
+    nags under the test runner and never fires when a config IS loaded. Non-fatal."""
+    from archforge.config import _config_disabled
+    if not _config_disabled():
+        return
+    cfg_path = Path(args.root or _DEFAULT_ROOT) / "archforge.py"
+    if not cfg_path.exists():
+        print(f"note: no {cfg_path} found — using framework defaults. "
+              f"Run `{PROG} init` to generate one.", file=sys.stderr)
 
 
 # --------------------------------------------------------------------------- #
@@ -508,9 +567,13 @@ def main(argv: list[str] | None = None, *,
         return _cmd_approve(args)
     if args.command == "reject":
         return _cmd_reject(args)
+    if args.command == "init":
+        return _cmd_init(args)
     if args.command == "evolve":
+        _maybe_config_hint(args)
         return _cmd_evolve(args, components=components, loop=False)
     if args.command == "evolve-loop":
+        _maybe_config_hint(args)
         return _cmd_evolve(args, components=components, loop=True)
     # argparse rejects unknown subcommands before dispatch, so this is unreachable.
     return 0  # pragma: no cover
