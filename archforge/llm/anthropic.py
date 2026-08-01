@@ -15,11 +15,15 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-from archforge.config import ANTHROPIC_DEFAULT_MAX_TOKENS, DEFAULT_MODELS
+from archforge import userconfig as ucfg
+from archforge.config import ANTHROPIC_DEFAULT_MAX_TOKENS
 from archforge.llm._common import extract_json, split_system
 from archforge.llm.base import Completion, LLMError, Message, Usage
 
-DEFAULT_MODEL = DEFAULT_MODELS["anthropic"]
+
+def _default_model() -> str:
+    """The provider's default model id, resolved lazily from the active config."""
+    return ucfg.get("DEFAULT_MODELS")["anthropic"]
 
 
 class AnthropicClient:
@@ -45,7 +49,7 @@ class AnthropicClient:
         temperature: float | None = None, max_tokens: int | None = None,
         response_format: str = "text",
     ) -> Completion:
-        m = model or DEFAULT_MODEL
+        m = model or _default_model()
         system, rest = split_system(messages)
         body = [
             {"role": ("user" if msg.role.value == "user" else "assistant"), "content": msg.content}
@@ -76,3 +80,9 @@ class AnthropicClient:
 
 
 __all__ = ["AnthropicClient", "DEFAULT_MODEL"]
+
+
+def __getattr__(name: str):  # PEP 562
+    if name == "DEFAULT_MODEL":
+        return _default_model()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

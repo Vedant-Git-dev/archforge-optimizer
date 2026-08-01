@@ -31,8 +31,8 @@ from archforge.llm.base import LLMError
 class ScriptedJudge:
     """A programmable, deterministic Judge (no LLM)."""
 
-    def __init__(self, *, rubric: Rubric = default_rubric) -> None:
-        self._rubric = rubric
+    def __init__(self, *, rubric: Rubric | None = None) -> None:
+        self._rubric = rubric if rubric is not None else default_rubric()
         # (spec_id, task_id) -> aggregate
         self._fixed: dict[tuple[str, str], float] = {}
         # base aggregate when not explicitly fixed

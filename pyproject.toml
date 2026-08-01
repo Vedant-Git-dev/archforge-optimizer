@@ -5,6 +5,7 @@ description = "ArchForge — a self-improving meta-layer over multi-agent system
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.7",
+    "python-dotenv>=1.0",
 ]
 
 # The installed console command — the package STILL imports as `archforge`
@@ -20,7 +21,6 @@ dev = [
     "hypothesis>=6",
     "ruff>=0.5",
     "mypy>=1.11",
-    "python-dotenv"
 ]
 # Real LLM providers — install only the one(s) you run. None are required to
 # import or test the package; adapters import lazily and self-skip when absent.

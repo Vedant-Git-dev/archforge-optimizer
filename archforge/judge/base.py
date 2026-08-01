@@ -19,7 +19,7 @@ from typing import Protocol, Sequence, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from archforge.config import DEFAULT_RUBRIC_ID, DEFAULT_SUB_RUBRICS
+from archforge import userconfig as ucfg
 import archforge.models as m
 from archforge.host.base import Task
 from archforge.llm.base import LLMClient, LLMError, Message, Role
@@ -43,10 +43,20 @@ class Rubric(BaseModel):
     sub_rubrics: dict[str, str]  # dimension name -> "what a high score looks like"
 
 
-default_rubric = Rubric(
-    rubric_id=DEFAULT_RUBRIC_ID,
-    sub_rubrics=dict(DEFAULT_SUB_RUBRICS),
-)
+def default_rubric() -> Rubric:
+    """The Judge's default rubric (E2 / I5), built lazily from the active config.
+
+    A function (not a module-level instance) so the rubric id + sub-rubrics resolve
+    from ``archforge.userconfig`` at first USE — not at import — which keeps this
+    module importable before ``init`` has run and makes an edit to
+    ``.archforge/archforge.py`` take effect on a fresh construction. Each call reads
+    the cached resolved namespace (one resolve per process) and builds a fresh
+    ``Rubric``; cheap and free of cross-test stale-state.
+    """
+    return Rubric(
+        rubric_id=ucfg.get("DEFAULT_RUBRIC_ID"),
+        sub_rubrics=dict(ucfg.get("DEFAULT_SUB_RUBRICS")),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -108,11 +118,11 @@ class Judge:
         llm: LLMClient,
         *,
         model: str,
-        rubric: Rubric = default_rubric,
+        rubric: Rubric | None = None,
     ) -> None:
         self._llm = llm
         self._model = model
-        self._rubric = rubric
+        self._rubric = rubric if rubric is not None else default_rubric()
 
     @property
     def rubric(self) -> Rubric:

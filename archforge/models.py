@@ -18,10 +18,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from archforge.config import (
-    DEFAULT_DELTA, DEFAULT_PLATEAU_CYCLES, DEFAULT_REPEATS, DEFAULT_TAU,
-    DEFAULT_UNRUNNABLE_FRAC, MAX_REPEATS, SPEC_ID_HASH_LEN,
-)
+from archforge.config import SPEC_ID_HASH_LEN
+from archforge import userconfig as ucfg
 
 # --------------------------------------------------------------------------- #
 # Enums / literal types
@@ -341,12 +339,17 @@ class Thresholds(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    tau: float = DEFAULT_TAU          # promotion margin: keep iff cand - inc >= τ
-    delta: float = DEFAULT_DELTA      # regression floor (>= τ); rollback trigger (E6/I3)
-    repeats: int = DEFAULT_REPEATS    # R: repeats per task (adaptive; E3 raises it near ±τ)
-    max_repeats: int = MAX_REPEATS    # cap on adaptive R
-    unrunnable_frac: float = DEFAULT_UNRUNNABLE_FRAC  # ε: >ε crash -> unrunnable (E4)
-    plateau_cycles: int = DEFAULT_PLATEAU_CYCLES     # K no-promotion -> plateau (E8)
+    # Tunable defaults resolve lazily from archforge.userconfig (the active config
+    # — the project's .archforge/archforge.py, or the in-memory sane template under
+    # the pytest gate) — so this module imports cleanly BEFORE `init` has run. Each
+    # read is one ucfg.get() dict lookup after a one-time resolve+cache. See
+    # archforge/userconfig.py.
+    tau: float = Field(default_factory=lambda: ucfg.get("DEFAULT_TAU"))          # promotion margin
+    delta: float = Field(default_factory=lambda: ucfg.get("DEFAULT_DELTA"))     # rollback floor (E6/I3)
+    repeats: int = Field(default_factory=lambda: ucfg.get("DEFAULT_REPEATS"))    # R repeats/task (E3)
+    max_repeats: int = Field(default_factory=lambda: ucfg.get("MAX_REPEATS"))    # cap on adaptive R
+    unrunnable_frac: float = Field(default_factory=lambda: ucfg.get("DEFAULT_UNRUNNABLE_FRAC"))  # ε (E4)
+    plateau_cycles: int = Field(default_factory=lambda: ucfg.get("DEFAULT_PLATEAU_CYCLES"))     # K (E8)
 
 
 # --------------------------------------------------------------------------- #

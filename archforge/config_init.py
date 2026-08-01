@@ -27,7 +27,7 @@ from __future__ import annotations
 
 _DEFAULT_MODELS = (
     '{"anthropic": "claude-sonnet-5", "openai": "gpt-4o", '
-    '"groq": "openai/gpt-oss-120b", "gemini": "gemini-2.5-flash"}'
+    '"groq": "openai/gpt-oss-120b", "gemini": "gemini-3.1-flash-lite"}'
 )
 _DEFAULT_SUB_RUBRICS = (
     '{"correctness": "Is the final answer factually correct and aligned with the task?", '

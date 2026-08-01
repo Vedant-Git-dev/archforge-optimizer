@@ -24,9 +24,7 @@ from typing import Callable
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from archforge.config import (
-    BACKOFF_CAP_SECONDS, DEFAULT_JUDGE_RETRIES, DEFAULT_UNRUNNABLE_FRAC,
-)
+from archforge import userconfig as ucfg
 import archforge.models as m
 from archforge.host.base import HostMAS, Task
 from archforge.judge.base import JudgeProtocol, SuiteAggregate
@@ -79,7 +77,7 @@ class SuiteRun(BaseModel):
 
 def _default_backoff(attempt: int) -> float:
     """Exponential backoff capped at BACKOFF_CAP_SECONDS (production default). Tests override."""
-    return min(2.0 ** attempt, BACKOFF_CAP_SECONDS)
+    return min(2.0 ** attempt, ucfg.get("BACKOFF_CAP_SECONDS"))
 
 
 class SuiteRunner:
@@ -91,15 +89,17 @@ class SuiteRunner:
         judge: JudgeProtocol,
         trace_store: TraceStore,
         *,
-        epsilon: float = DEFAULT_UNRUNNABLE_FRAC,
-        judge_retries: int = DEFAULT_JUDGE_RETRIES,
+        epsilon: float | None = None,
+        judge_retries: int | None = None,
         backoff: Callable[[int], float] | None = None,
     ) -> None:
         self._host = host
         self._judge = judge
         self._trace_store = trace_store
-        self._epsilon = epsilon
-        self._judge_retries = judge_retries
+        # Tunables resolve lazily from the active config (disk post-init, or the
+        # in-memory sane template under the pytest gate); None arg ⇒ the default.
+        self._epsilon = epsilon if epsilon is not None else ucfg.get("DEFAULT_UNRUNNABLE_FRAC")
+        self._judge_retries = judge_retries if judge_retries is not None else ucfg.get("DEFAULT_JUDGE_RETRIES")
         self._backoff = backoff if backoff is not None else _default_backoff
 
     def run_suite(self, spec: m.Spec, suite: Suite, *, R: int = 1) -> SuiteRun:

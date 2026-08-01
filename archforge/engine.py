@@ -29,10 +29,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from archforge.config import (
-    DEFAULT_JUDGE_RETRIES, DEFAULT_MAX_CYCLES, DEFAULT_MAX_TOKENS_PER_CYCLE,
-    DEFAULT_MAX_TOKENS_TOTAL, DEFAULT_PLATEAU_CYCLES, DEFAULT_REPEATS,
-)
+from archforge import userconfig as ucfg
 import archforge.models as m
 from archforge.architect import ArchitectProtocol, ArchitectResult
 from archforge.gatekeeper import Action, Decision, Gatekeeper
@@ -102,11 +99,14 @@ class LoopResult:
 class EngineConfig:
     """Tunables for the loop (Beyond thresholds, which live in m.Thresholds)."""
 
-    max_cycles: int = DEFAULT_MAX_CYCLES
-    max_tokens_per_cycle: int | None = DEFAULT_MAX_TOKENS_PER_CYCLE  # E3 cap (None=∞)
-    max_tokens_total: int | None = DEFAULT_MAX_TOKENS_TOTAL
-    repeats: int = DEFAULT_REPEATS                # R (adaptive engine raises it)
-    plateau_cycles: int = DEFAULT_PLATEAU_CYCLES  # K consecutive no-promotion (E8)
+    # Tunable defaults resolve lazily from archforge.userconfig (the active config),
+    # so importing the engine — and even materializing an EngineConfig() default —
+    # works BEFORE `init` has run (no from-import at module load).
+    max_cycles: int = field(default_factory=lambda: ucfg.get("DEFAULT_MAX_CYCLES"))
+    max_tokens_per_cycle: int | None = field(default_factory=lambda: ucfg.get("DEFAULT_MAX_TOKENS_PER_CYCLE"))  # E3 (None=∞)
+    max_tokens_total: int | None = field(default_factory=lambda: ucfg.get("DEFAULT_MAX_TOKENS_TOTAL"))
+    repeats: int = field(default_factory=lambda: ucfg.get("DEFAULT_REPEATS"))    # R (adaptive raises it)
+    plateau_cycles: int = field(default_factory=lambda: ucfg.get("DEFAULT_PLATEAU_CYCLES"))  # K (E8)
 
 
 class Engine:
@@ -140,7 +140,7 @@ class Engine:
         self._cfg = config or EngineConfig()
         self._runner = SuiteRunner(host, judge, trace_store,
                                     epsilon=self._th.unrunnable_frac,
-                                    judge_retries=DEFAULT_JUDGE_RETRIES)
+                                    judge_retries=ucfg.get("DEFAULT_JUDGE_RETRIES"))
         self._gatekeeper = Gatekeeper(spec_store, attempt_store, thresholds=self._th)
         # baseline cache: incumbent_suite_run keyed by spec_id (stable until rubric changes)
         self._baseline_cache: dict[str, SuiteRun] = {}

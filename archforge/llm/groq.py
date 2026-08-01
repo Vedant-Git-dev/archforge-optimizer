@@ -10,11 +10,14 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from archforge.config import DEFAULT_MODELS
+from archforge import userconfig as ucfg
 from archforge.llm._common import openai_style_complete
 from archforge.llm.base import Completion, LLMError, Message
 
-DEFAULT_MODEL = DEFAULT_MODELS["groq"]
+
+def _default_model() -> str:
+    """The provider's default model id, resolved lazily from the active config."""
+    return ucfg.get("DEFAULT_MODELS")["groq"]
 
 
 class GroqClient:
@@ -43,10 +46,16 @@ class GroqClient:
         response_format: str = "text",
     ) -> Completion:
         return openai_style_complete(
-            self._client, provider="groq", default_model=DEFAULT_MODEL, messages=messages,
+            self._client, provider="groq", default_model=_default_model(), messages=messages,
             model=model, temperature=temperature, max_tokens=max_tokens,
             response_format=response_format,
         )
 
 
 __all__ = ["GroqClient", "DEFAULT_MODEL"]
+
+
+def __getattr__(name: str):  # PEP 562
+    if name == "DEFAULT_MODEL":
+        return _default_model()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

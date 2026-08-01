@@ -10,22 +10,19 @@ path — the same organs, stores, seeding, and budget caps — factored once so
 every external adapter reuses it instead of re-deriving ~150 lines of wiring.
 
 Env priority (documented): an explicit ``api_key`` > a real process env var >
-a ``.env`` file (loaded via ``archforge.config.load_env`` with ``setdefault`` so
-a real env var always wins). The loader is stdlib-only — no hard dependency on
-``python-dotenv``; an absent file is a no-op.
+a ``.env`` file (loaded via ``archforge.config.load_env`` so a real env var always
+wins). ``python-dotenv`` is a core dependency; an absent file is a no-op.
 """
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import archforge.models as m
+from archforge import userconfig as ucfg
 from archforge.architect import Architect
-from archforge.config import (
-    DEFAULT_ENV_FILE, DEFAULT_MAX_TOKENS_PER_CYCLE, DEFAULT_MAX_TOKENS_TOTAL,
-    DEFAULT_ROOT_DIR, DEFAULT_RUBRIC_ID, PROVIDER, load_env,
-)
+from archforge.config import load_env
 from archforge.engine import CycleResult, Engine, EngineConfig, LoopResult
 from archforge.judge.base import Judge, default_rubric
 from archforge.llm import make_client
@@ -44,24 +41,27 @@ class RunnerConfig:
 
     # LLM provider for the Architect + Judge (NOT for the host's own agents —
     # those keep whatever provider the adapter wires, per the design's split).
-    provider: str = PROVIDER
+    # Every tunable default resolves lazily from archforge.userconfig (the active
+    # config), so building a RunnerConfig() default works BEFORE `init` has run
+    # under the pytest gate (template sane values); a real run reads the disk file.
+    provider: str = field(default_factory=lambda: ucfg.get("PROVIDER"))
     architect_model: str | None = None    # None → provider default
     judge_model: str | None = None
     api_key: str | None = None
     base_url: str | None = None
-    rubric: str = DEFAULT_RUBRIC_ID
-    env_file: str | None = DEFAULT_ENV_FILE
+    rubric: str = field(default_factory=lambda: ucfg.get("DEFAULT_RUBRIC_ID"))
+    env_file: str | None = field(default_factory=lambda: ucfg.get("DEFAULT_ENV_FILE"))
 
     # loop / budget
-    tau: float = m.DEFAULT_TAU
-    max_cycles: int = EngineConfig().max_cycles
-    repeats: int = EngineConfig().repeats
-    max_tokens_per_cycle: int | None = DEFAULT_MAX_TOKENS_PER_CYCLE
-    max_tokens_total: int | None = DEFAULT_MAX_TOKENS_TOTAL
-    plateau_cycles: int = EngineConfig().plateau_cycles
+    tau: float = field(default_factory=lambda: ucfg.get("DEFAULT_TAU"))
+    max_cycles: int = field(default_factory=lambda: ucfg.get("DEFAULT_MAX_CYCLES"))
+    repeats: int = field(default_factory=lambda: ucfg.get("DEFAULT_REPEATS"))
+    max_tokens_per_cycle: int | None = field(default_factory=lambda: ucfg.get("DEFAULT_MAX_TOKENS_PER_CYCLE"))
+    max_tokens_total: int | None = field(default_factory=lambda: ucfg.get("DEFAULT_MAX_TOKENS_TOTAL"))
+    plateau_cycles: int = field(default_factory=lambda: ucfg.get("DEFAULT_PLATEAU_CYCLES"))
 
     # persistence (a directory, NOT a tmp path — reruns continue evolving)
-    storage_root: str | os.PathLike[str] = DEFAULT_ROOT_DIR
+    storage_root: str | os.PathLike[str] = field(default_factory=lambda: ucfg.get("DEFAULT_ROOT_DIR"))
 
 
 # --------------------------------------------------------------------------- #
@@ -83,10 +83,10 @@ def _build_organs(cfg: RunnerConfig):
         )
     load_env(cfg.env_file)
     llm = make_client(cfg.provider, api_key=cfg.api_key, base_url=cfg.base_url)
-    from archforge.config import DEFAULT_MODELS
-    arch = Architect(llm, model=cfg.architect_model or DEFAULT_MODELS[cfg.provider])
-    judge = Judge(llm, model=cfg.judge_model or DEFAULT_MODELS[cfg.provider],
-                  rubric=default_rubric if cfg.rubric == "default-v1" else cfg.rubric)
+    models = ucfg.get("DEFAULT_MODELS")
+    arch = Architect(llm, model=cfg.architect_model or models[cfg.provider])
+    judge = Judge(llm, model=cfg.judge_model or models[cfg.provider],
+                  rubric=default_rubric() if cfg.rubric == "default-v1" else cfg.rubric)
     return arch, judge
 
 

@@ -49,14 +49,23 @@ from archforge.stores import AttemptStore, SpecStore, TraceStore
 from archforge.suite import Suite
 from archforge.config_init import archforge_config_text, env_example_text
 
-# Project-wide config — single source of truth in archforge.config.
+# System config (provider roster, CLI fixtures, PROG, .env loader) — single source
+# in archforge.config. The TUNABLE defaults (tau/delta/repeats/provider/models/…)
+# are NOT imported here; they resolve lazily from archforge.userconfig (the active
+# project config made by `init`) at use time, so importing+running the CLI works
+# before `init` has created .archforge/archforge.py and so an edit takes effect on
+# the next run. See archforge/userconfig.py.
+from archforge import userconfig as ucfg
 from archforge.config import (
     ALL_PROVIDERS as _PROVIDERS,
-    DEFAULT_DELTA, DEFAULT_ENV_FILE, DEFAULT_MAX_CYCLES, DEFAULT_MAX_TOKENS_PER_CYCLE,
-    DEFAULT_MAX_TOKENS_TOTAL, DEFAULT_MODELS, DEFAULT_PLATEAU_CYCLES, DEFAULT_REPEATS,
-    DEFAULT_ROOT_DIR as _DEFAULT_ROOT, DEFAULT_SUITE_ID, DEFAULT_TAU, DEFAULT_TASK_ID,
-    DEFAULT_TASK_INPUT, PROG, PROVIDER, load_env,
+    DEFAULT_SUITE_ID, DEFAULT_TASK_ID, DEFAULT_TASK_INPUT,
+    PROG, load_env,
 )
+from archforge.userconfig import ConfigNotInitialized
+
+# Fixed run-state / config-discovery dir (a system path, independent of the
+# tunable DEFAULT_ROOT_DIR which the embedder API reads via archforge.userconfig).
+_DEFAULT_ROOT = ".archforge"
 
 
 # --------------------------------------------------------------------------- #
@@ -130,35 +139,35 @@ def _add_evolve_args(p: argparse.ArgumentParser, *, loop: bool) -> None:
                    help="import an external MAS adapter (a HostMAS/BaseHostAdapter "
                         "subclass) as the runtime host; pair with --provider for the "
                         "Architect/Judge organs. e.g. --adapter archforge_glue:LuminaAdapter")
-    p.add_argument("--provider", choices=_PROVIDERS, default=PROVIDER,
-                   help="LLM provider (default: scripted; anthropic/openai/groq/gemini are real)")
-    # API keys: a `.env` in the cwd is loaded first (load_env, setdefault ∴ real env
-    # wins), then the provider SDK reads its key var; --api-key overrides both. The
-    # key var name lives in archforge.config (see load_env + DEFAULT_MODELS).
-    p.add_argument("--env-file", default=DEFAULT_ENV_FILE,
+    p.add_argument("--provider", choices=_PROVIDERS, default=None,
+                   help="LLM provider (default from archforge.py: anthropic/openai/groq/gemini "
+                        "are real; scripted is the zero-cost fake)")
+    # API keys: a `.env` in the cwd is loaded first (load_env, ∴ real env wins), then
+    # the provider SDK reads its key var; --api-key overrides both. Tunable flags
+    # default to None here so the active config (.archforge/archforge.py) supplies
+    # the real default at resolve time — an explicit flag overrides the file.
+    p.add_argument("--env-file", default=None,
                    help="load provider API keys from this file before --provider "
-                        "builds the organs (default: .env in the cwd; no-op if absent)")
+                        "builds the organs (default from archforge.py; no-op if absent)")
     p.add_argument("--api-key", default=None, help="provider API key (overrides .env/env)")
     p.add_argument("--base-url", default=None, help="provider base URL override")
     p.add_argument("--architect-model", default=None,
                    help="model id for the Architect (else the provider default)")
     p.add_argument("--judge-model", default=None,
                    help="model id for the Judge (else the provider default)")
-    # thresholds — every default sourced from archforge.config (single source)
-    p.add_argument("--tau", type=float, default=DEFAULT_TAU,
-                   help="promotion margin τ (default: %(default)s)")
-    p.add_argument("--delta", type=float, default=DEFAULT_DELTA,
-                   help="regression floor δ (default: %(default)s)")
-    p.add_argument("--repeats", type=int, default=DEFAULT_REPEATS,
-                   help="R: repeats per task (default: %(default)s)")
+    # thresholds — every default resolves from the active config (.archforge/archforge.py);
+    # a flag is None at the parser and filled from ucfg unless the user set it.
+    p.add_argument("--tau", type=float, default=None, help="promotion margin τ")
+    p.add_argument("--delta", type=float, default=None, help="regression floor δ (>= τ)")
+    p.add_argument("--repeats", type=int, default=None, help="R: repeats per eval-suite task")
     if loop:
-        p.add_argument("--max-cycles", type=int, default=DEFAULT_MAX_CYCLES,
-                       help="cap on P-E-C cycles (default: %(default)s)")
-        p.add_argument("--plateau-cycles", type=int, default=DEFAULT_PLATEAU_CYCLES,
-                       help="K consecutive no-promotion cycles → plateau (default: %(default)s)")
-        p.add_argument("--max-tokens-total", type=int, default=DEFAULT_MAX_TOKENS_TOTAL,
+        p.add_argument("--max-cycles", type=int, default=None,
+                       help="cap on P-E-C cycles")
+        p.add_argument("--plateau-cycles", type=int, default=None,
+                       help="K consecutive no-promotion cycles → plateau (E8)")
+        p.add_argument("--max-tokens-total", type=int, default=None,
                        help="total token budget cap; stop at or before reaching it (E3)")
-    p.add_argument("--max-tokens-per-cycle", type=int, default=DEFAULT_MAX_TOKENS_PER_CYCLE,
+    p.add_argument("--max-tokens-per-cycle", type=int, default=None,
                    help="per-cycle token cap; abort mid-cycle if exceeded (E3)")
 
 
@@ -227,18 +236,34 @@ def _stores(root: str) -> tuple[SpecStore, AttemptStore, TraceStore]:
     return SpecStore(root), AttemptStore(root), TraceStore(root)
 
 
+def _arg(args: argparse.Namespace, attr: str, cfg_name: str):
+    """Resolve a CLI tunable: the explicit flag value, else the active-config default.
+
+    Every tunable flag defaults to ``None`` at the parser (so `--help` works pre-init
+    and a user's `.archforge/archforge.py` override isn't frozen into argparse). The
+    real default is read here from ``ucfg`` (disk post-init, or the in-memory sane
+    template under the pytest gate) only when the flag is omitted.
+    """
+    v = getattr(args, attr, None)
+    return v if v is not None else ucfg.get(cfg_name)
+
+
 def _thresholds(args: argparse.Namespace) -> m.Thresholds:
-    return m.Thresholds(tau=args.tau, delta=args.delta, repeats=args.repeats,
-                        plateau_cycles=getattr(args, "plateau_cycles", m.Thresholds().plateau_cycles))
+    return m.Thresholds(
+        tau=_arg(args, "tau", "DEFAULT_TAU"),
+        delta=_arg(args, "delta", "DEFAULT_DELTA"),
+        repeats=_arg(args, "repeats", "DEFAULT_REPEATS"),
+        plateau_cycles=_arg(args, "plateau_cycles", "DEFAULT_PLATEAU_CYCLES"),
+    )
 
 
 def _config(args: argparse.Namespace) -> EngineConfig:
     return EngineConfig(
-        max_cycles=getattr(args, "max_cycles", EngineConfig().max_cycles),
-        max_tokens_per_cycle=getattr(args, "max_tokens_per_cycle", None),
-        max_tokens_total=getattr(args, "max_tokens_total", None),
-        repeats=args.repeats,
-        plateau_cycles=getattr(args, "plateau_cycles", EngineConfig().plateau_cycles),
+        max_cycles=_arg(args, "max_cycles", "DEFAULT_MAX_CYCLES"),
+        max_tokens_per_cycle=_arg(args, "max_tokens_per_cycle", "DEFAULT_MAX_TOKENS_PER_CYCLE"),
+        max_tokens_total=_arg(args, "max_tokens_total", "DEFAULT_MAX_TOKENS_TOTAL"),
+        repeats=_arg(args, "repeats", "DEFAULT_REPEATS"),
+        plateau_cycles=_arg(args, "plateau_cycles", "DEFAULT_PLATEAU_CYCLES"),
     )
 
 
@@ -258,21 +283,23 @@ def _default_components(args: argparse.Namespace) -> Components:
     (a real MAS host is its own integration; the seam already accepts it).
     """
 
-    suite = Suite(suite_id=DEFAULT_SUITE_ID, rubric_id=default_rubric.rubric_id,
+    suite = Suite(suite_id=DEFAULT_SUITE_ID, rubric_id=default_rubric().rubric_id,
                   tasks=[Task(task_id=DEFAULT_TASK_ID, input=DEFAULT_TASK_INPUT)])
-    if args.provider == "scripted":
+    provider = args.provider or ucfg.get("PROVIDER")
+    if provider == "scripted":
         return Components(host=FakeHostMAS(), judge=ScriptedJudge(),
                           architect=ScriptedArchitect(), suite=suite)
     from archforge.llm import make_client, LLMError
 
     try:
-        llm = make_client(args.provider, api_key=args.api_key, base_url=args.base_url)
+        llm = make_client(provider, api_key=args.api_key, base_url=args.base_url)
     except LLMError as exc:
         print(f"[provider] {exc}", file=sys.stderr)
         raise
-    arch = Architect(llm, model=args.architect_model or DEFAULT_MODELS[args.provider])
-    judge = Judge(llm, model=args.judge_model or DEFAULT_MODELS[args.provider],
-                  rubric=default_rubric)
+    models = ucfg.get("DEFAULT_MODELS")
+    arch = Architect(llm, model=args.architect_model or models[provider])
+    judge = Judge(llm, model=args.judge_model or models[provider],
+                  rubric=default_rubric())
     return Components(host=FakeHostMAS(), judge=judge, architect=arch, suite=suite)
 
 
@@ -409,18 +436,25 @@ def _thresholds_for_approval() -> m.Thresholds:
 def _cmd_evolve(args: argparse.Namespace, *, components: Components | None,
                 loop: bool) -> int:
     # Injected `components` (the test/embedding path) always win — they ARE the
-    # scripted organs, by contract. Otherwise build organs per `--provider`:
-    # a real provider now wires the REAL Architect + Judge over a real LLMClient.
+    # organs, by contract. Otherwise build organs per `--provider`. While a real
+    # tunable is needed we require `init` to have run (the "pip install → init → CLI
+    # works" contract): a project with no .archforge/archforge.py gets the init hint
+    # and rc 1 instead of a bogus run. No-op under the pytest gate (tests use the
+    # in-memory sane template).
     if components is None:
-        # Load API keys from a `.env` in the cwd (setdefault ∴ real env wins;
-        # --api-key passed to make_client wins above both). No-op if the file is
-        # missing or for --provider scripted (no keys needed).
-        load_env(getattr(args, "env_file", None))
-    if components is None and args.provider != "scripted":
         try:
-            components = _default_components(args)           # builds a real LLMClient
-        except Exception:
-            return 2                                          # message already printed
+            ucfg.ensure_initialized()
+        except ConfigNotInitialized as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        # Load API keys from the cwd's .env (real env wins; --api-key wins above
+        # both). No-op if the file is missing or for --provider scripted.
+        load_env(getattr(args, "env_file", None) or ucfg.get("DEFAULT_ENV_FILE"))
+        if (args.provider or ucfg.get("PROVIDER")) != "scripted":
+            try:
+                components = _default_components(args)           # builds a real LLMClient
+            except Exception:
+                return 2                                          # message already printed
 
     specs, atts, traces = _stores(args.root)
 
@@ -510,7 +544,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
         return 2
     root.mkdir(parents=True, exist_ok=True)        # .archforge/ (also the run state dir)
     cfg_path.write_text(archforge_config_text(), encoding="utf-8")
-    print(f"created: {cfg_path}  (uncomment/edit a value to override shipped defaults)")
+    print(f"created: {cfg_path}  (edit a value to change a default; the file is ACTIVE as-is)")
 
     # 2. .env.example — create once at the repo root (cwd), never overwrite.
     env_example = Path(".env.example")
@@ -521,20 +555,6 @@ def _cmd_init(args: argparse.Namespace) -> int:
         print(f"created: {env_example}  (copy to .env and fill in your API keys)")
     print(f"\nNext: edit {cfg_path}, then run `{PROG} evolve --seed <spec.json>`.")
     return 0
-
-
-def _maybe_config_hint(args: argparse.Namespace) -> None:
-    """One-time stderr advisory when a user runs an evolve-family command with no
-    project config in place. Only fires when auto-load is off (pytest /
-    ARCHFORGE_CONFIG_DISABLE) AND `.archforge/archforge.py` is absent — so it never
-    nags under the test runner and never fires when a config IS loaded. Non-fatal."""
-    from archforge.config import _config_disabled
-    if not _config_disabled():
-        return
-    cfg_path = Path(args.root or _DEFAULT_ROOT) / "archforge.py"
-    if not cfg_path.exists():
-        print(f"note: no {cfg_path} found — using framework defaults. "
-              f"Run `{PROG} init` to generate one.", file=sys.stderr)
 
 
 # --------------------------------------------------------------------------- #
@@ -570,10 +590,8 @@ def main(argv: list[str] | None = None, *,
     if args.command == "init":
         return _cmd_init(args)
     if args.command == "evolve":
-        _maybe_config_hint(args)
         return _cmd_evolve(args, components=components, loop=False)
     if args.command == "evolve-loop":
-        _maybe_config_hint(args)
         return _cmd_evolve(args, components=components, loop=True)
     # argparse rejects unknown subcommands before dispatch, so this is unreachable.
     return 0  # pragma: no cover
