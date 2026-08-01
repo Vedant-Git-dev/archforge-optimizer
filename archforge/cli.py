@@ -296,9 +296,10 @@ def _default_components(args: argparse.Namespace) -> Components:
     except LLMError as exc:
         print(f"[provider] {exc}", file=sys.stderr)
         raise
-    models = ucfg.get("DEFAULT_MODELS")
-    arch = Architect(llm, model=args.architect_model or models[provider])
-    judge = Judge(llm, model=args.judge_model or models[provider],
+    arch_models = ucfg.get("DEFAULT_ARCHITECT_MODELS")
+    judge_models = ucfg.get("DEFAULT_JUDGE_MODELS")
+    arch = Architect(llm, model=args.architect_model or arch_models[provider])
+    judge = Judge(llm, model=args.judge_model or judge_models[provider],
                   rubric=default_rubric())
     return Components(host=FakeHostMAS(), judge=judge, architect=arch, suite=suite)
 

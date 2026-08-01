@@ -22,10 +22,15 @@ from __future__ import annotations
 # --------------------------------------------------------------------------- #
 # (name, active-value-as-assignment, one-line purpose). The assignment text is
 # emitted verbatim into the generated file AND exec'd by the resolver, so it must be
-# valid Python and carry the real sane value (note DEFAULT_MODELS / DEFAULT_SUB_RUBRICS
-# are the full dicts, not `{}` — the resolver must resolve them without KeyError).
+# valid Python and carry the real sane value (note DEFAULT_ARCHITECT_MODELS /
+# DEFAULT_JUDGE_MODELS / DEFAULT_SUB_RUBRICS are the full dicts, not `{}` — the
+# resolver must resolve them without KeyError).
 
-_DEFAULT_MODELS = (
+_DEFAULT_ARCHITECT_MODELS = (
+    '{"anthropic": "claude-sonnet-5", "openai": "gpt-4o", '
+    '"groq": "openai/gpt-oss-120b", "gemini": "gemini-3.1-flash-lite"}'
+)
+_DEFAULT_JUDGE_MODELS = (
     '{"anthropic": "claude-sonnet-5", "openai": "gpt-4o", '
     '"groq": "openai/gpt-oss-120b", "gemini": "gemini-3.1-flash-lite"}'
 )
@@ -36,61 +41,56 @@ _DEFAULT_SUB_RUBRICS = (
 )
 
 _FIELDS: tuple[tuple[str, str, str], ...] = (
-    # --- LLM providers ---
+    # --- LLM provider
     ("PROVIDER", '"gemini"',
-     "LLM provider for the Architect + Judge (scripted|anthropic|openai|groq|gemini)"),
-    ("DEFAULT_MODELS", _DEFAULT_MODELS,
-     "per-provider default model id (edit the dict to change a provider's default)"),
-    # --- optimization policy ---
-    ("DEFAULT_TAU", "0.05", "τ promotion margin — keep a candidate iff it beats incumbent by >= τ"),
-    ("DEFAULT_DELTA", "0.07", "δ regression floor (>= τ) — rollback trigger (E6/I3)"),
-    ("DEFAULT_REPEATS", "1", "R: repeats per eval-suite task (higher = less variance, more cost)"),
-    ("MAX_REPEATS", "3", "cap on adaptive R the engine may raise near ±τ"),
-    ("DEFAULT_UNRUNNABLE_FRAC", "0.25", "ε — a candidate with > ε crashed-task fraction is dropped (E4)"),
-    ("DEFAULT_PLATEAU_CYCLES", "5", "K — consecutive no-promotion cycles -> plateau (E8)"),
-    ("DEFAULT_MAX_CYCLES", "20", "hard ceiling on P-E-C cycles per evolve-loop run"),
-    # --- grader resilience ---
-    ("DEFAULT_JUDGE_RETRIES", "2", "judge (LLM-as-judge) call retries on transient outage (E9)"),
-    ("BACKOFF_CAP_SECONDS", "30.0", "exponential-backoff ceiling between judge retries (E9)"),
-    # --- judge scoring ---
-    ("DEFAULT_RUBRIC_ID", '"default-v1"', "rubric id the Judge scores against (E2/I5 — stay within a rubric)"),
+     "which LLM to use (scripted|anthropic|openai|groq|gemini); scripted needs no API key"),
+    ("DEFAULT_ARCHITECT_MODELS", _DEFAULT_ARCHITECT_MODELS,
+     "default Architect (proposer) model per provider; a bare LLMClient call falls "
+     "back here too — edit the dict to change it"),
+    ("DEFAULT_JUDGE_MODELS", _DEFAULT_JUDGE_MODELS,
+     "default Judge (scorer) model per provider — edit the dict to change it"),
+    # --- optimization policy
+    ("DEFAULT_TAU", "0.05", "how much better a candidate must score to be promoted (τ)"),
+    ("DEFAULT_DELTA", "0.07", "how far a promoted run can drop before it's rolled back (δ, >= τ)"),
+    ("DEFAULT_REPEATS", "1", "how many times each eval task is run; more = steadier scores, more cost (R)"),
+    ("MAX_REPEATS", "3", "upper bound on R"),
+    ("DEFAULT_UNRUNNABLE_FRAC", "0.25", "drop a candidate if more than this fraction of its tasks crash (ε)"),
+    ("DEFAULT_PLATEAU_CYCLES", "5", "stop after this many cycles in a row with no improvement (K)"),
+    ("DEFAULT_MAX_CYCLES", "20", "max optimization cycles per run"),
+    # --- grader resilience
+    ("DEFAULT_JUDGE_RETRIES", "2", "how many times to retry a failed judge call"),
+    ("BACKOFF_CAP_SECONDS", "30.0", "max seconds to wait between judge retries"),
+    # --- judge scoring
+    ("DEFAULT_RUBRIC_ID", '"default-v1"', "name of the scoring rubric (keep it stable so runs compare)"),
     ("DEFAULT_SUB_RUBRICS", _DEFAULT_SUB_RUBRICS,
-     "sub-rubric texts (dict) the default rubric scores against"),
-    # --- environment / budget / storage ---
-    ("DEFAULT_ROOT_DIR", '".archforge"', "run state directory (specs/attempts/traces) — resolved against cwd"),
-    ("DEFAULT_ENV_FILE", '".env"', "project .env loaded for provider API keys (setdefault => real env wins)"),
-    ("DEFAULT_MAX_TOKENS_TOTAL", "None", "whole-run token budget cap (E3); None = uncapped"),
-    ("DEFAULT_MAX_TOKENS_PER_CYCLE", "None", "per-cycle token cap; abort mid-cycle if exceeded (E3); None = uncapped"),
+     "the rubric's dimensions: what a high score looks like, per dimension"),
+    # --- environment / budget / storage
+    ("DEFAULT_ROOT_DIR", '".archforge"', "where run state is written (relative to where you run the CLI)"),
+    ("DEFAULT_ENV_FILE", '".env"', "the .env file loaded for API keys (a real env var always wins)"),
+    ("DEFAULT_MAX_TOKENS_TOTAL", "None", "whole-run token budget cap; None = no limit"),
+    ("DEFAULT_MAX_TOKENS_PER_CYCLE", "None", "per-cycle token cap (aborts mid-cycle if exceeded); None = no limit"),
 )
 
 # section break points in _FIELDS (for grouping the emitted file)
 _BREAKS: dict[int, str] = {
-    2: "# --- optimization policy ------------------------------------------------",
-    9: "# --- grader resilience ---------------------------------------------------",
-    11: "# --- judge scoring -------------------------------------------------------",
-    13: "# --- environment / budget / storage --------------------------------------",
+    3: "# --- optimization policy ------------------------------------------------",
+    10: "# --- grader resilience ---------------------------------------------------",
+    12: "# --- judge scoring -------------------------------------------------------",
+    14: "# --- environment / budget / storage --------------------------------------",
 }
 
 _HEADER = """\
-# archforge.py — ArchForge user-tunable config (generated by `archforge-optimizer init`).
+# archforge.py — your ArchForge config (made by `archforge-optimizer init`).
 #
-# This is the SOLE source of ArchForge's tunable defaults. It ships with SANE ACTIVE
-# values (below) so the CLI works immediately after `init`; edit a value to change
-# ArchForge's behaviour across CLI flags, RunnerConfig/EngineConfig/Thresholds
-# defaults, and the Judge. ArchForge reads this at USE time (not import), so deleting
-# the file returns the "run `archforge-optimizer init`" guard.
-#
-# Framework internals (provider roster, storage dirnames, hash lengths, PROG,
-# VERSION, ...) are NOT tunable here — they live in the shipped archforge/config.py.
-# Only the names below are read from this file.
+# The values below already work — the CLI runs as-is after `init`. Edit any value
+# to change that default. Nothing here is required to make ArchForge import.
 #
 
-# --- LLM providers -----------------------------------------------------------
+# --- LLM provider ------------------------------------------------------------
 """
 
 _FOOTER = """
-# Tip: this file is ACTIVE as-is. Edit only what you want to change; an edited
-# value takes effect on the next `archforge-optimizer` run.
+# Changes here take effect on the next `archforge-optimizer` run.
 """
 
 

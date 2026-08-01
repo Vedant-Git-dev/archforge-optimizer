@@ -83,9 +83,10 @@ def _build_organs(cfg: RunnerConfig):
         )
     load_env(cfg.env_file)
     llm = make_client(cfg.provider, api_key=cfg.api_key, base_url=cfg.base_url)
-    models = ucfg.get("DEFAULT_MODELS")
-    arch = Architect(llm, model=cfg.architect_model or models[cfg.provider])
-    judge = Judge(llm, model=cfg.judge_model or models[cfg.provider],
+    arch_models = ucfg.get("DEFAULT_ARCHITECT_MODELS")
+    judge_models = ucfg.get("DEFAULT_JUDGE_MODELS")
+    arch = Architect(llm, model=cfg.architect_model or arch_models[cfg.provider])
+    judge = Judge(llm, model=cfg.judge_model or judge_models[cfg.provider],
                   rubric=default_rubric() if cfg.rubric == "default-v1" else cfg.rubric)
     return arch, judge
 

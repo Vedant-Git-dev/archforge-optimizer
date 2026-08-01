@@ -22,8 +22,10 @@ from archforge.llm.base import Completion, LLMError, Message, Usage
 
 
 def _default_model() -> str:
-    """The provider's default model id, resolved lazily from the active config."""
-    return ucfg.get("DEFAULT_MODELS")["anthropic"]
+    """The provider's default model id for a bare complete() call, resolved lazily
+    from the active config — the Architect (proposer) dict (the role-specific
+    defaults are resolved by the runner/CLI from their own role dicts)."""
+    return ucfg.get("DEFAULT_ARCHITECT_MODELS")["anthropic"]
 
 
 class AnthropicClient:
