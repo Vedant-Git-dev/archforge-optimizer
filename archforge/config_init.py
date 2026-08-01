@@ -40,6 +40,19 @@ _DEFAULT_SUB_RUBRICS = (
     '"grounding": "Are the claims supported by the inputs/context, not invented?"}'
 )
 
+# The starter suite `init` writes to .archforge/suite.json — byte-identical to the
+# one-task CLI fallback fixture (cli-default / t1 / hello), so the generated default
+# round-trips to the same Suite the CLI builds when the file is absent. A per-task
+# rubric_id is optional in the file; omitting it scores against the active rubric.
+_DEFAULT_SUITE_JSON = (
+    '{\n'
+    '  "suite_id": "cli-default",\n'
+    '  "tasks": [\n'
+    '    {"task_id": "t1", "input": "hello"}\n'
+    '  ]\n'
+    '}\n'
+)
+
 _FIELDS: tuple[tuple[str, str, str], ...] = (
     # --- LLM provider
     ("PROVIDER", '"gemini"',
@@ -67,6 +80,7 @@ _FIELDS: tuple[tuple[str, str, str], ...] = (
     # --- environment / budget / storage
     ("DEFAULT_ROOT_DIR", '".archforge"', "where run state is written (relative to where you run the CLI)"),
     ("DEFAULT_ENV_FILE", '".env"', "the .env file loaded for API keys (a real env var always wins)"),
+    ("DEFAULT_SUITE_FILE", '".archforge/suite.json"', "the suite file defining your eval tasks (absent → the one-task default)"),
     ("DEFAULT_MAX_TOKENS_TOTAL", "None", "whole-run token budget cap; None = no limit"),
     ("DEFAULT_MAX_TOKENS_PER_CYCLE", "None", "per-cycle token cap (aborts mid-cycle if exceeded); None = no limit"),
 )
@@ -130,4 +144,5 @@ def env_example_text() -> str:
 # The tunable names — exported so callers/tests enumerate the editable surface.
 EDITABLE_NAMES: tuple[str, ...] = tuple(name for name, _, _ in _FIELDS)
 
-__all__ = ["archforge_config_text", "env_example_text", "TEMPLATE", "EDITABLE_NAMES"]
+__all__ = ["archforge_config_text", "env_example_text", "TEMPLATE", "EDITABLE_NAMES",
+           "_DEFAULT_SUITE_JSON"]

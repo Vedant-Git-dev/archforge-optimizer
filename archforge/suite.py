@@ -19,7 +19,10 @@ suite order — exercise crash scripting predictably). Runs are sequential in v1
 
 from __future__ import annotations
 
+import json
+import os
 import time
+from pathlib import Path
 from typing import Callable
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -27,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from archforge import userconfig as ucfg
 import archforge.models as m
 from archforge.host.base import HostMAS, Task
-from archforge.judge.base import JudgeProtocol, SuiteAggregate
+from archforge.judge.base import JudgeProtocol, SuiteAggregate, default_rubric
 from archforge.middleware import TracingMiddleware
 from archforge.stores import TraceStore
 
@@ -45,6 +48,47 @@ class Suite(BaseModel):
     suite_id: str
     rubric_id: str
     tasks: list[Task] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- #
+# Loading a Suite from a JSON sidecar (.archforge/suite.json)
+# --------------------------------------------------------------------------- #
+
+
+def load_suite_file(path: str | os.PathLike[str] | None) -> Suite | None:
+    """Read + validate a suite JSON file -> ``Suite``; ``None`` if the file is absent.
+
+    A *present* but malformed file raises ``ValueError`` with a clear message — it
+    does NOT silently fall back, since the user wrote a file they expect to load.
+    ``rubric_id`` on the ``Suite`` defaults to the active rubric
+    (``default_rubric().rubric_id``) when the file omits it, so the common case can
+    drop the field; a per-task ``rubric_id`` survives (it overrides the suite default
+    at scoring time — ``SuiteRunner.run_suite`` already does ``task.rubric_id or
+    suite.rubric_id``).
+
+    The file shape is ``{"suite_id": str, "rubric_id"?: str,
+    "tasks": [{"task_id","input", "rubric_id"?}]}`` — mirrors ``--seed``'s
+    ``json.loads`` + clear-error precedent.
+    """
+    if not path:
+        return None
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"suite file {p} is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict) or "suite_id" not in data or "tasks" not in data:
+        raise ValueError(
+            f"suite file {p} must be a JSON object with 'suite_id' and 'tasks'"
+        )
+    try:
+        rubric_id = data.get("rubric_id") or default_rubric().rubric_id
+        tasks = [Task(**t) for t in data["tasks"]]
+    except Exception as exc:  # noqa: BLE001 — pydantic ValidationError on a bad task
+        raise ValueError(f"malformed task in suite file {p}: {exc}") from exc
+    return Suite(suite_id=data["suite_id"], rubric_id=rubric_id, tasks=tasks)
 
 
 # --------------------------------------------------------------------------- #
@@ -186,4 +230,4 @@ def _sum_tokens(trace: m.Trace) -> int:
     return total
 
 
-__all__ = ["Suite", "SuiteRun", "SuiteRunner"]
+__all__ = ["Suite", "SuiteRun", "SuiteRunner", "load_suite_file"]

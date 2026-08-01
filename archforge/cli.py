@@ -46,8 +46,8 @@ from archforge.judge import ScriptedJudge
 from archforge.judge.base import Judge, JudgeProtocol, default_rubric
 from archforge.lint import lint
 from archforge.stores import AttemptStore, SpecStore, TraceStore
-from archforge.suite import Suite
-from archforge.config_init import archforge_config_text, env_example_text
+from archforge.suite import Suite, load_suite_file
+from archforge.config_init import archforge_config_text, env_example_text, _DEFAULT_SUITE_JSON
 
 # System config (provider roster, CLI fixtures, PROG, .env loader) — single source
 # in archforge.config. The TUNABLE defaults (tau/delta/repeats/provider/models/…)
@@ -155,6 +155,9 @@ def _add_evolve_args(p: argparse.ArgumentParser, *, loop: bool) -> None:
                    help="model id for the Architect (else the provider default)")
     p.add_argument("--judge-model", default=None,
                    help="model id for the Judge (else the provider default)")
+    p.add_argument("--suite", metavar="PATH", default=None,
+                   help="path to a suite.json (overrides the DEFAULT_SUITE_FILE tunable; "
+                        "the file's tasks define what you optimize against)")
     # thresholds — every default resolves from the active config (.archforge/archforge.py);
     # a flag is None at the parser and filled from ucfg unless the user set it.
     p.add_argument("--tau", type=float, default=None, help="promotion margin τ")
@@ -283,8 +286,13 @@ def _default_components(args: argparse.Namespace) -> Components:
     (a real MAS host is its own integration; the seam already accepts it).
     """
 
-    suite = Suite(suite_id=DEFAULT_SUITE_ID, rubric_id=default_rubric().rubric_id,
-                  tasks=[Task(task_id=DEFAULT_TASK_ID, input=DEFAULT_TASK_INPUT)])
+    # The eval suite: a JSON sidecar (.archforge/suite.json by default) if present,
+    # else the one-task fallback fixture (byte-identical to `init`'s seeded
+    # suite.json, so out-of-box == generated-default). --suite overrides the tunable.
+    suite_path = getattr(args, "suite", None) or ucfg.get("DEFAULT_SUITE_FILE")
+    suite = load_suite_file(suite_path) or Suite(
+        suite_id=DEFAULT_SUITE_ID, rubric_id=default_rubric().rubric_id,
+        tasks=[Task(task_id=DEFAULT_TASK_ID, input=DEFAULT_TASK_INPUT)])
     provider = args.provider or ucfg.get("PROVIDER")
     if provider == "scripted":
         return Components(host=FakeHostMAS(), judge=ScriptedJudge(),
@@ -554,6 +562,16 @@ def _cmd_init(args: argparse.Namespace) -> int:
     else:
         env_example.write_text(env_example_text(), encoding="utf-8")
         print(f"created: {env_example}  (copy to .env and fill in your API keys)")
+
+    # 3. suite.json — seed the eval-task sidecar next to archforge.py (so --root
+    # relocations also move the seeded suite); never overwrite — the user may have
+    # tuned the tasks. Byte-identical to the CLI's one-task fallback fixture.
+    suite_path = root / "suite.json"
+    if suite_path.exists():
+        print(f"kept:    {suite_path}  (already present — left untouched)")
+    else:
+        suite_path.write_text(_DEFAULT_SUITE_JSON, encoding="utf-8")
+        print(f"created: {suite_path}  (edit the tasks to change what you optimize against)")
     print(f"\nNext: edit {cfg_path}, then run `{PROG} evolve --seed <spec.json>`.")
     return 0
 

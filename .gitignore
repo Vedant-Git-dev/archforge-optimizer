@@ -6,6 +6,7 @@ data/
 *.txt
 tests/
 
-# Keep the user-editable config (archforge.py) trackable though.
+# Keep the user-editable config (archforge.py) and suite (suite.json) trackable though.
 .archforge/*
 !.archforge/archforge.py
+!.archforge/suite.json
