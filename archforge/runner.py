@@ -86,8 +86,16 @@ def _build_organs(cfg: RunnerConfig):
     arch_models = ucfg.get("DEFAULT_ARCHITECT_MODELS")
     judge_models = ucfg.get("DEFAULT_JUDGE_MODELS")
     arch = Architect(llm, model=cfg.architect_model or arch_models[cfg.provider])
+    # The Judge always scores under the active rubric resolved from archforge.py
+    # (DEFAULT_RUBRIC_ID + DEFAULT_SUB_RUBRICS), exactly like the CLI builds it
+    # (`default_rubric()`). `RunnerConfig.rubric` is a string id — passing it
+    # straight to Judge (the old `else cfg.rubric` branch) handed a `str` where a
+    # `Rubric` is expected, crashing on `_rubric.sub_rubrics` at the first score.
+    # There is no rubric-by-id registry to look one up, so the only sane choice is
+    # the active rubric; `cfg.rubric` is kept on RunnerConfig for the embedder's
+    # own metadata use but no longer selects a different grading object here.
     judge = Judge(llm, model=cfg.judge_model or judge_models[cfg.provider],
-                  rubric=default_rubric() if cfg.rubric == "default-v1" else cfg.rubric)
+                  rubric=default_rubric())
     return arch, judge
 
 
