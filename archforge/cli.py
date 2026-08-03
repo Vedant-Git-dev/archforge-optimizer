@@ -172,6 +172,10 @@ def _add_evolve_args(p: argparse.ArgumentParser, *, loop: bool) -> None:
                        help="total token budget cap; stop at or before reaching it (E3)")
     p.add_argument("--max-tokens-per-cycle", type=int, default=None,
                    help="per-cycle token cap; abort mid-cycle if exceeded (E3)")
+    p.add_argument("--max-wall-ms-per-cycle", type=float, default=None,
+                   help="per-cycle wall-clock cap (ms); aborts if exceeded — "
+                        "bounds non-LLM nodes (retriever/tool/rule) that cost time, not tokens; "
+                        "default None = no limit")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -267,6 +271,7 @@ def _config(args: argparse.Namespace) -> EngineConfig:
         max_tokens_total=_arg(args, "max_tokens_total", "DEFAULT_MAX_TOKENS_TOTAL"),
         repeats=_arg(args, "repeats", "DEFAULT_REPEATS"),
         plateau_cycles=_arg(args, "plateau_cycles", "DEFAULT_PLATEAU_CYCLES"),
+        max_wall_ms_per_cycle=_arg(args, "max_wall_ms_per_cycle", "DEFAULT_MAX_WALL_MS_PER_CYCLE"),
     )
 
 

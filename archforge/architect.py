@@ -166,6 +166,11 @@ class Architect:
         if change is None:
             return _plateau("architect returned an unparseable change")
 
+        # Kind gate (shared): prompt_edit/model_swap apply ONLY to llm nodes.
+        mismatch = _kind_mismatch_note(incumbent, change)
+        if mismatch is not None:
+            return _plateau(mismatch)
+
         # The LLM nests the edit under `payload`; mutate reads the inner fields.
         edit = proposal.get("payload")
         if not isinstance(edit, dict):
@@ -235,7 +240,14 @@ class Architect:
                     "{prompt_edit, knob, add_node, remove_node, rewire, model_swap}. "
                     "`target` = node_id (or 'from,to' for rewire). `payload` carries "
                     "the edit: {prompt} | {knobs:{...}} | {model} | {node, wiring} | "
-                    "{remove:[from,to], add:[from,to,type]}. Make the change address the blame."
+                    "{remove:[from,to], add:[from,to,type]}. Each Spec node has a "
+                    "`kind` ∈ {llm, rule, retriever, tool, symbolic} and a `tunable` "
+                    "allowlist of the EXTRA knobs it owns. `prompt_edit`/`model_swap` "
+                    "apply ONLY to `llm` nodes; `knob` may set `temperature`/`retries`/"
+                    "`max_tokens` on ANY node, plus any EXTRA key listed in that node's "
+                    "`tunable` (any other extra key is rejected); for non-`llm` nodes "
+                    "prefer `knob` edits to the node's own params (`top_k`,`threshold`,…) "
+                    "or graph edits. Make the change address the blame."
                 ),
             ),
             Message(
@@ -302,6 +314,15 @@ class ScriptedArchitect:
             return _lint_rejected(_as_lint_errors("scripted malformed candidate"))
 
         blame = credit_assign(incumbent, worst_task_scores)
+
+        # Kind gate (shared with the real Architect): prompt_edit/model_swap on a
+        # non-llm node plateaus deterministically — nothing committed. Mirrors the
+        # real path's `_kind_mismatch_note` so a scripted E2E exercises the same
+        # rule (the plan's verification step 5).
+        mismatch = _kind_mismatch_note(incumbent, change)
+        if mismatch is not None:
+            return _plateau(mismatch)
+
         try:
             candidate = apply_change(incumbent, change, payload)
         except Exception as exc:  # noqa: BLE001
@@ -360,9 +381,41 @@ def _describe_diff(kind: m.ChangeKind, target: str, payload: Any) -> str:
     return f"{kind.value} on '{target}'"
 
 
+def _node_opt(spec: m.Spec, node_id: str) -> m.Node | None:
+    """Safe node lookup that returns None instead of raising (decoupled from
+    mutate's private `_node`). Used by the kind gate so a missing target falls
+    through to the normal apply/lint path instead of being mis-plateaued here."""
+    return next((n for n in spec.nodes if n.node_id == node_id), None)
+
+
+def _kind_mismatch_note(spec: m.Spec, change: m.Change) -> str | None:
+    """Kind gate for prompt_edit/model_swap: they apply ONLY to ``llm`` nodes.
+
+    A change of one of those kinds aimed at a non-llm node is valid metadata
+    (not "unparseable") but a kind mismatch, so the candidate should plateau with
+    a precise note (same E7/E8 outcome, nothing committed) rather than mutate
+    silently editing an empty prompt/model on a node that ignores it (a no-op
+    candidate masquerading as a real change). Returns the plateau note when the
+    change must be dropped, or ``None`` to proceed. A missing target is NOT a
+    kind mismatch — return None so it falls through to apply/lint below, which
+    rejects the structural defect instead of being mis-plateaued here.
+
+    Shared by the real ``Architect`` and ``ScriptedArchitect`` so the rule is
+    enforced uniformly and is deterministically testable through the scripted path.
+    """
+    if change.kind not in (m.ChangeKind.PROMPT_EDIT, m.ChangeKind.MODEL_SWAP):
+        return None
+    tgt = _node_opt(spec, change.target)
+    if tgt is None or tgt.kind is m.NodeKind.LLM:
+        return None
+    return (f"{change.kind.value} on non-llm node '{change.target}' "
+            f"(kind={tgt.kind.value})")
+
+
 def _spec_summary(spec: m.Spec) -> str:
     nodes = "\n".join(
-        f"- {n.node_id} [{n.role}] model={n.model} prompt={n.system_prompt!r}"
+        f"- {n.node_id} [{n.role}] kind={n.kind.value} model={n.model or '—'} "
+        f"tunable={list(n.knobs.tunable) or '—'} prompt={n.system_prompt!r}"
         for n in spec.nodes
     )
     edges = "\n".join(f"- {e.from_} -> {e.to} ({e.type.value})" for e in spec.edges)

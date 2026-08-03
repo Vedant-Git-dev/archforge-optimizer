@@ -153,6 +153,7 @@ class WrappedAgent:
             model=cfg.model,
             knobs=cfg.knobs,
             tools=cfg.tools,
+            kind=cfg.kind,
         )
         elapsed_ms = (time.perf_counter() - start) * 1000.0
 

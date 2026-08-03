@@ -83,6 +83,8 @@ _FIELDS: tuple[tuple[str, str, str], ...] = (
     ("DEFAULT_SUITE_FILE", '".archforge/suite.json"', "the suite file defining your eval tasks (absent → the one-task default)"),
     ("DEFAULT_MAX_TOKENS_TOTAL", "None", "whole-run token budget cap; None = no limit"),
     ("DEFAULT_MAX_TOKENS_PER_CYCLE", "None", "per-cycle token cap (aborts mid-cycle if exceeded); None = no limit"),
+    ("DEFAULT_MAX_WALL_MS_PER_CYCLE", "None", "per-cycle wall-clock cap (ms); aborts if exceeded — "
+     "covers non-LLM nodes (retriever/tool/rule) that cost time, not tokens; None = no limit"),
 )
 
 # section break points in _FIELDS (for grouping the emitted file)
@@ -129,15 +131,12 @@ TEMPLATE: str = archforge_config_text()
 def env_example_text() -> str:
     """The body of the generated `.env.example` (empty provider key var names)."""
     return (
-        "# .env.example — copy to .env (gitignored) and fill in your keys.\n"
-        "# ArchForge loads ./.env on startup (load_env) so a checked-out repo\n"
-        "# with keys present 'just runs' for `archforge-optimizer evolve`. A real\n"
-        "# env var or `--api-key` always overrides the file. NEVER commit .env.\n"
-        "\n"
+        "# fill in your API keys for provider you are going to use for archforge-optimizer.\n\n"
         "# ANTHROPIC_API_KEY=\n"
         "# OPENAI_API_KEY=\n"
         "# GROQ_API_KEY=\n"
         "# GEMINI_API_KEY=\n"
+        "\n# Other service keys you need for your tasks\n"
     )
 
 

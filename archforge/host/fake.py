@@ -39,16 +39,30 @@ class CrashOnCall(Exception):
     """Scripted failure of a single agent invocation (spec E4)."""
 
 
-class FakeAgent:
-    """A node's executor: deterministic, optionally scripted to fail.
+def _default_responder(node: m.Node, prompt: str, _system: str) -> str:
+    """Deterministic text so identical (node, prompt) -> identical output."""
 
-    Behaviour:
-      * `invoke` returns a deterministic response built from the node config +
-        the incoming prompt + task input, so the same (spec, task) always yields
-        the same output (reproducible runs for R-repeat aggregation).
-      * An optional `crash_on` callback lets a test force this agent to raise on
-        a chosen invocation index (e.g. "fail on the 4th task of the suite") to
-        exercise a mid-run crash.
+    h = hashlib.sha256(f"{node.node_id}|{prompt}".encode()).hexdigest()[:SHORT_HASH_LEN]
+    return f"[{node.role}:{node.model}:{h}] {prompt}"
+
+
+class _FakeBaseAgent:
+    """Shared scaffolding for every fake agent kind (LLM + non-LLM).
+
+    Owns the two pieces common to all kinds, lifted out of the old `FakeAgent`:
+      * the `crash_on` hook so a test can force ANY node — including a non-LLM
+        one — to raise on a chosen invocation index (spec E4 mid-run crash);
+      * `invoke_count` so deterministic behaviour + the crash index line up.
+
+    Each kind subclasses and implements ``_respond`` (what text + tool calls the
+    node produces). The base then wraps it with kind-aware perf: an ``llm`` node
+    costs deterministic pseudo-tokens (``len//4``, as before); a non-llm node
+    costs **ZERO tokens** — its real cost is wall-clock latency, which the
+    per-cycle wall cap (engine) measures. That tokens=0 convention is what lets a
+    tool/retriever/rule-heavy pipeline stay under the token cap yet be bounded by
+    the new wall cap (the design's cost fix). Latency is deterministic + nonzero
+    so traces stay reproducible (R-repeat aggregation, E1) and the wall cap is
+    exercisable.
     """
 
     def __init__(
@@ -56,11 +70,9 @@ class FakeAgent:
         node: m.Node,
         *,
         crash_on: Callable[[int], bool] | None = None,
-        responder: Callable[[m.Node, str, str], str] | None = None,
     ) -> None:
         self._node = node
         self._crash_on = crash_on
-        self._responder = responder or _default_responder
         self.invoke_count = 0
 
     @property
@@ -71,6 +83,17 @@ class FakeAgent:
     def role(self) -> str:
         return self._node.role
 
+    def _respond(
+        self,
+        prompt: str,
+        system_prompt: str,
+        model: str,
+        knobs: m.Knobs,
+        tools: list[str],
+        kind: m.NodeKind,
+    ) -> tuple[str, list[m.ToolCall]]:
+        raise NotImplementedError
+
     def invoke(
         self,
         prompt: str,
@@ -79,28 +102,126 @@ class FakeAgent:
         model: str,
         knobs: m.Knobs,
         tools: list[str],
+        kind: m.NodeKind = m.NodeKind.LLM,
     ) -> AgentResponse:
         if self._crash_on is not None and self._crash_on(self.invoke_count):
             self.invoke_count += 1
             raise CrashOnCall(self.node_id)
         self.invoke_count += 1
 
-        out = self._responder(self._node, prompt, system_prompt)
-        # deterministic pseudo-token/perf so cost & dedup behave in tests
-        token_count = max(1, len(out) // 4)
+        out, tool_calls = self._respond(prompt, system_prompt, model, knobs, tools, kind)
+        # LLM-shaped tokens (len//4) for cost+dedup; non-LLM kinds cost time, not
+        # tokens — perf.tokens=0 is the cost-cap convention (see class docstring).
+        token_count = max(1, len(out) // 4) if kind is m.NodeKind.LLM else 0
+        latency = float((token_count % 7) + 1)  # deterministic, always nonzero
         return AgentResponse(
             text=out,
-            tool_calls=[],  # fake agents do not call tools in v1
-            perf=m.StepPerf(tokens=token_count, latency_ms=float((token_count % 7) + 1),
+            tool_calls=tool_calls,
+            perf=m.StepPerf(tokens=token_count, latency_ms=latency,
                              retries=0, error=None),
         )
 
 
-def _default_responder(node: m.Node, prompt: str, _system: str) -> str:
-    """Deterministic text so identical (node, prompt) -> identical output."""
+class FakeAgent(_FakeBaseAgent):
+    """An LLM node's executor: deterministic, optionally scripted to fail.
 
-    h = hashlib.sha256(f"{node.node_id}|{prompt}".encode()).hexdigest()[:SHORT_HASH_LEN]
-    return f"[{node.role}:{node.model}:{h}] {prompt}"
+    The historical fake (now the `kind=llm` arm). `invoke` returns a deterministic
+    response built from the node config + the incoming prompt, so the same
+    (spec, task) always yields the same output (reproducible runs for R-repeat
+    aggregation). An optional `crash_on` forces a raise on a chosen invocation
+    index. Also used, harmless, for `symbolic` nodes — a `symbolic` node is a
+    deterministic transform whose cost is latency not tokens, which the base
+    enforces via its kind-aware perf (tokens=0 for non-llm).
+    """
+
+    def __init__(
+        self,
+        node: m.Node,
+        *,
+        crash_on: Callable[[int], bool] | None = None,
+        responder: Callable[[m.Node, str, str], str] | None = None,
+    ) -> None:
+        super().__init__(node, crash_on=crash_on)
+        self._responder = responder or _default_responder
+
+    def _respond(
+        self,
+        prompt: str,
+        system_prompt: str,
+        model: str,
+        knobs: m.Knobs,
+        tools: list[str],
+        kind: m.NodeKind,
+    ) -> tuple[str, list[m.ToolCall]]:
+        return self._responder(self._node, prompt, system_prompt), []
+
+
+class FakeRuleAgent(_FakeBaseAgent):
+    """A `rule` node (heuristic/scorer/classifier threshold — no prompt, no model).
+
+    Produces a deterministic label that surfaces its `threshold` knob (the
+    `tunable` param the LLM Architect edits on a rule node). Zero tokens.
+    """
+
+    def _respond(
+        self,
+        prompt: str,
+        system_prompt: str,
+        model: str,
+        knobs: m.Knobs,
+        tools: list[str],
+        kind: m.NodeKind,
+    ) -> tuple[str, list[m.ToolCall]]:
+        threshold = getattr(knobs, "threshold", None)
+        h = hashlib.sha256(f"{self._node.node_id}|{prompt}".encode()).hexdigest()[:SHORT_HASH_LEN]
+        return f"[rule:{self._node.role}:thr={threshold}:{h}] {prompt}", []
+
+
+class FakeRetrieverAgent(_FakeBaseAgent):
+    """A `retriever` node — fetches search/vector context, parameterized by `top_k`.
+
+    Emits `top_k` deterministic context chunks (default 3 when `knobs.top_k` is
+    unset), so an Architect `knob` edit raising `top_k` visibly changes the step's
+    output (a different SuiteRun). Zero tokens.
+    """
+
+    def _respond(
+        self,
+        prompt: str,
+        system_prompt: str,
+        model: str,
+        knobs: m.Knobs,
+        tools: list[str],
+        kind: m.NodeKind,
+    ) -> tuple[str, list[m.ToolCall]]:
+        top_k = getattr(knobs, "top_k", None) or 3
+        h = hashlib.sha256(f"{self._node.node_id}|{prompt}".encode()).hexdigest()[:SHORT_HASH_LEN]
+        chunks = [f"chunk-{i}:{h}" for i in range(int(top_k))]
+        return f"[retriever:{self._node.role}:top_k={int(top_k)}] " + "; ".join(chunks), []
+
+
+class FakeToolAgent(_FakeBaseAgent):
+    """A `tool` node — an external call recorded as a `ToolCall`.
+
+    Produces a deterministic serialized result AND a `ToolCall(tool_id=node_id)`
+    so a tool node's run is distinguishable from an LLM's (the trace carries the
+    call). Zero tokens.
+    """
+
+    def _respond(
+        self,
+        prompt: str,
+        system_prompt: str,
+        model: str,
+        knobs: m.Knobs,
+        tools: list[str],
+        kind: m.NodeKind,
+    ) -> tuple[str, list[m.ToolCall]]:
+        h = hashlib.sha256(f"{self._node.node_id}|{prompt}".encode()).hexdigest()[:SHORT_HASH_LEN]
+        result = f"[tool:{self._node.role}:{h}] {prompt}"
+        call = m.ToolCall(tool_id=self._node.node_id, args={"query": prompt},
+                          result=result, ok=True)
+        return result, [call]
 
 
 # --------------------------------------------------------------------------- #
@@ -127,7 +248,7 @@ class FakePipeline:
         self,
         spec: m.Spec,
         middleware: TracingMiddleware,
-        agents: dict[str, FakeAgent],
+        agents: dict[str, _FakeBaseAgent],
     ) -> None:
         self._spec = spec
         self._mw = middleware
@@ -203,8 +324,18 @@ class FakePipeline:
 class FakeHostMAS:
     """A `HostMAS` that builds a `FakePipeline` from a Spec + node scripts.
 
-    `node_scripts` lets tests inject per-node behaviour (e.g. crash_on) keyed by
-    node_id; built per `instantiate` so each candidate Spec gets fresh agents.
+    Dispatches on each node's `kind` (the non-LLM extension) to pick the matching
+    fake agent — `llm`/`symbolic` -> `FakeAgent`, `rule` -> `FakeRuleAgent`,
+    `retriever` -> `FakeRetrieverAgent`, `tool` -> `FakeToolAgent` — so a mixed
+    pipeline (retriever + llm + tool) runs end-to-end **zero-LLM**. An explicit
+    `node_scripts[...]` override (e.g. `crash_on`) still applies to whatever kind
+    the node is, so E4 mid-run crashes script on non-LLM nodes too.
+
+    `responder` overrides the LLM-arm responder only (`_default_responder`
+    otherwise); it is ignored by the non-LLM fakes (they own their deterministic
+    outputs). `node_scripts` lets tests inject per-node behaviour keyed by
+    node_id; agents are built per `instantiate` so each candidate Spec gets fresh
+    ones.
     """
 
     def __init__(
@@ -215,14 +346,26 @@ class FakeHostMAS:
         self._node_scripts = node_scripts or {}
         self._responder = responder
 
+    def _agent_for(
+        self, node: m.Node, crash_on: Callable[[int], bool] | None
+    ) -> _FakeBaseAgent:
+        kind = node.kind
+        if kind is m.NodeKind.RULE:
+            return FakeRuleAgent(node, crash_on=crash_on)
+        if kind is m.NodeKind.RETRIEVER:
+            return FakeRetrieverAgent(node, crash_on=crash_on)
+        if kind is m.NodeKind.TOOL:
+            return FakeToolAgent(node, crash_on=crash_on)
+        # llm + symbolic share the generic (deterministic) agent; symbolic costs
+        # latency not tokens, enforced by the base's kind-aware perf.
+        return FakeAgent(node, crash_on=crash_on, responder=self._responder)
+
     def instantiate(self, spec: m.Spec, middleware: TracingMiddleware) -> Runnable:
-        agents: dict[str, FakeAgent] = {}
+        agents: dict[str, _FakeBaseAgent] = {}
         for node in spec.nodes:
             script = dict(self._node_scripts.get(node.node_id, {}))
             crash_on = script.pop("crash_on", None) if isinstance(script, dict) else None
-            agents[node.node_id] = FakeAgent(
-                node, crash_on=crash_on, responder=self._responder,
-            )
+            agents[node.node_id] = self._agent_for(node, crash_on)
         return FakePipeline(spec, middleware, agents)
 
 
@@ -231,4 +374,7 @@ class FakeHostMAS:
 # ``_topo_order`` / ``_run_id`` so the call sites below are unchanged.
 
 
-__all__ = ["FakeHostMAS", "FakeAgent", "FakePipeline", "CrashOnCall"]
+__all__ = [
+    "FakeHostMAS", "FakeAgent", "FakeRuleAgent", "FakeRetrieverAgent",
+    "FakeToolAgent", "FakePipeline", "CrashOnCall",
+]

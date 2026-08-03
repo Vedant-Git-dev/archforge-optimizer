@@ -11,6 +11,10 @@ invoke time — so evolving the pipeline is swapping which Spec the host uses).
 from __future__ import annotations
 
 from archforge.host.base import Agent, AgentResponse, HostMAS, Runnable, Task
-from archforge.host.fake import FakeHostMAS
+from archforge.host.fake import (
+    FakeAgent, FakeHostMAS, FakeRuleAgent, FakeRetrieverAgent, FakeToolAgent,
+)
 
-__all__ = ["Agent", "AgentResponse", "HostMAS", "Runnable", "Task", "FakeHostMAS"]
+__all__ = ["Agent", "AgentResponse", "HostMAS", "Runnable", "Task",
+           "FakeHostMAS", "FakeAgent", "FakeRuleAgent", "FakeRetrieverAgent",
+           "FakeToolAgent"]

@@ -64,6 +64,7 @@ class CycleResult:
     incumbent_mean: float | None = None
     candidate_mean: float | None = None
     tokens: int = 0
+    latency_ms: float = 0.0               # summed wall-clock this cycle (inc + cand)
     note: str = ""
 
     @property
@@ -107,6 +108,13 @@ class EngineConfig:
     max_tokens_total: int | None = field(default_factory=lambda: ucfg.get("DEFAULT_MAX_TOKENS_TOTAL"))
     repeats: int = field(default_factory=lambda: ucfg.get("DEFAULT_REPEATS"))    # R (adaptive raises it)
     plateau_cycles: int = field(default_factory=lambda: ucfg.get("DEFAULT_PLATEAU_CYCLES"))  # K (E8)
+    # per-cycle wall-clock cap (ms). Defaults to None (opt-in) — closing the budget
+    # hole for non-LLM-heavy pipelines whose cost is *time* not tokens (a retriever/
+    # tool/rule node costs ~0 tokens). Mirrors max_tokens_per_cycle's per-cycle
+    # shape + none-means-∞ contract; timed post-eval (same as the token cap), not
+    # mid-step. No total-wall cap (YAGNI; the loop is already bounded by max_cycles
+    # + this per-cycle cap).
+    max_wall_ms_per_cycle: float | None = field(default_factory=lambda: ucfg.get("DEFAULT_MAX_WALL_MS_PER_CYCLE"))
 
 
 class Engine:
@@ -176,7 +184,10 @@ class Engine:
         candidate_spec = self._specs.get(candidate_spec_id)
         cand_run = self._bounded_run(candidate_spec, tag="candidate")
 
-        self._check_budget_cycle(cand_run.tokens + inc_run.tokens)
+        self._check_budget_cycle(
+            cand_run.tokens + inc_run.tokens,
+            cand_run.latency_ms + inc_run.latency_ms,
+        )
         decision = self._gatekeeper.decide(attempt_id, cand_run, inc_run)
         applied = self._gatekeeper.apply_decision(decision)
 
@@ -204,6 +215,7 @@ class Engine:
             incumbent_mean=inc_run.mean,
             candidate_mean=cand_run.mean,
             tokens=cand_run.tokens + inc_run.tokens,
+            latency_ms=cand_run.latency_ms + inc_run.latency_ms,
             note=decision.reason,
         )
 
@@ -261,11 +273,20 @@ class Engine:
     def _bounded_run(self, spec: m.Spec, *, tag: str) -> SuiteRun:
         return self._runner.run_suite(spec, self._suite, R=self._cfg.repeats)
 
-    def _check_budget_cycle(self, cycle_tokens: int) -> None:
+    def _check_budget_cycle(self, cycle_tokens: int, cycle_latency_ms: float = 0.0) -> None:
         cap = self._cfg.max_tokens_per_cycle
         if cap is not None and cycle_tokens > cap:
             raise CycleAborted(
                 f"per-cycle token cap exceeded ({cycle_tokens} > {cap}; tag budget)",
+            )
+        # Wall-clock cap: the cost fix for non-LLM-heavy pipelines (a retriever/
+        # tool/rule node costs ~0 tokens, so it sails past the token cap). Same
+        # post-eval timing + > contract as the token cap — incumbent untouched.
+        wall_cap = self._cfg.max_wall_ms_per_cycle
+        if wall_cap is not None and cycle_latency_ms > wall_cap:
+            raise CycleAborted(
+                f"per-cycle wall-clock cap exceeded "
+                f"({cycle_latency_ms:.1f}ms > {wall_cap}ms)",
             )
 
     def _over_total_budget(self) -> bool:

@@ -112,6 +112,7 @@ class SuiteRun(BaseModel):
     aggregate: SuiteAggregate
     mean: float                   # == aggregate.mean (convenience for the Gatekeeper)
     tokens: int = 0               # real cost incurred (sum of sunk step tokens)
+    latency_ms: float = 0.0       # summed wall-clock of sunk steps (bounds non-LLM nodes)
 
 
 # --------------------------------------------------------------------------- #
@@ -157,6 +158,7 @@ class SuiteRunner:
         scores: list[m.RunScore] = []
         failed_tasks: set[str] = set()
         tokens = 0
+        latency_ms = 0.0
 
         for task in suite.tasks:                       # task-major order
             rubric_id = task.rubric_id or suite.rubric_id
@@ -164,6 +166,7 @@ class SuiteRunner:
             for _ in range(R):
                 trace = runnable.run(task)
                 tokens += _sum_tokens(trace)
+                latency_ms += _sum_latency(trace)
                 rs = self._score_with_retry(trace, task, rubric_id)
                 if rs is not None:
                     scores.append(rs)
@@ -192,6 +195,7 @@ class SuiteRunner:
             aggregate=aggregate,
             mean=aggregate.mean,
             tokens=tokens,
+            latency_ms=latency_ms,
         )
 
     # --------------------------------------------------------------- scoring
@@ -227,6 +231,17 @@ def _sum_tokens(trace: m.Trace) -> int:
     for step in trace.steps:
         if step.perf is not None and step.perf.tokens:
             total += int(step.perf.tokens)
+    return total
+
+
+def _sum_latency(trace: m.Trace) -> float:
+    """Summed wall-clock of a run's sunk steps (ms). Bounds non-LLM nodes whose
+    cost is time, not tokens — feeds the per-cycle wall cap (the design's cost fix:
+    a tool/retriever-heavy pipeline that costs ~0 tokens stays bounded by latency)."""
+    total = 0.0
+    for step in trace.steps:
+        if step.perf is not None and step.perf.latency_ms:
+            total += float(step.perf.latency_ms)
     return total
 
 

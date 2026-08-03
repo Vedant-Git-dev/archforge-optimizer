@@ -35,6 +35,22 @@ class EdgeType(str, Enum):
     CONDITIONAL = "conditional"  # branch/loop, gated on `gate`
 
 
+class NodeKind(str, Enum):
+    """What BACKS a node — its tunable surface (the optimizer's non-LLM extension).
+
+    `LLM` nodes are tuned via `system_prompt`/`model`/named knobs as today. Non-LLM
+    kinds carry their params as EXTRA knobs (a retriever's `top_k`, a rule's
+    `threshold`, a tool's `endpoint`); the Architect may edit only the keys a node's
+    `Knobs.tunable` lists (plus the always-editable named knobs). See `Knobs`.
+    """
+
+    LLM = "llm"  # an LLM agent (the historical default)
+    RULE = "rule"  # heuristic / scorer / classifier threshold — no prompt, no model
+    RETRIEVER = "retriever"  # vector / search context fetch
+    TOOL = "tool"  # external API / tool call
+    SYMBOLIC = "symbolic"  # fixed code transform, no tunable internals
+
+
 class ChangeKind(str, Enum):
     """What the Architect changed on a candidate Spec (spec §3 Attempt)."""
 
@@ -85,24 +101,41 @@ STRUCTURAL_KINDS: frozenset[ChangeKind] = frozenset(
 
 
 class Knobs(BaseModel):
-    """Tunable per-agent parameters."""
+    """Tunable per-agent parameters.
 
-    model_config = ConfigDict(extra="forbid")
+    The three NAMED knobs (temperature/retries/max_tokens) plus an OPEN bag of
+    per-kind extras (a retriever's `top_k`, a rule's `threshold`, a tool's
+    `endpoint`...) carried via ``extra="allow"``. ``tunable`` lists the EXTRA
+    keys the Architect is PERMITTED to edit on this node; the named knobs are
+    always editable (back-compat for every legacy LLM Spec, whose ``tunable``
+    defaults to ``()``). An empty ``tunable`` means the extras are host-owned /
+    manual-only (a human author may still set them in the Spec JSON).
+    """
+
+    model_config = ConfigDict(extra="allow")
 
     temperature: float | None = None
     retries: int | None = None
     max_tokens: int | None = None
+    tunable: tuple[str, ...] = Field(default_factory=tuple)
 
 
 class Node(BaseModel):
-    """One agent in the pipeline graph."""
+    """One agent in the pipeline graph.
+
+    ``kind`` defaults to ``LLM`` so every Spec predating non-LLM nodes loads
+    unchanged. ``system_prompt``/``model`` are OPTIONAL (empty for non-LLM
+    kinds); the linter requires them non-empty for ``LLM`` nodes — a lint rule,
+    not a model constraint, so the closed ``Node`` model stays closed.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     node_id: str
     role: str
-    system_prompt: str
-    model: str
+    kind: NodeKind = NodeKind.LLM
+    system_prompt: str = ""
+    model: str = ""
     knobs: Knobs = Field(default_factory=Knobs)
     tools: list[str] = Field(default_factory=list)  # tool_ids, resolved by the host
 
@@ -160,11 +193,24 @@ class Spec(BaseModel):
         return _content_hash(self._canonical_payload())
 
     def _canonical_payload(self) -> dict[str, Any]:
-        """Nodes + edges + parent, sorted deterministically, with `from` alias restored."""
+        """Nodes + edges + parent, sorted deterministically, with `from` alias restored.
 
-        nodes = sorted(
-            (n.model_dump(mode="json") for n in self.nodes), key=lambda n: n["node_id"]
-        )
+        The new defaulted node fields (`kind=llm`, `tunable=()`) are STRIPPED when
+        at their default so a legacy Spec — predating non-LLM nodes — hashes
+        byte-identically to its pre-feature id (no store migration, no spec_id
+        drift). Explicit non-default `kind`/`tunable` DO appear: a different
+        artifact gets a different id, as content-addressing requires.
+        """
+
+        def _node_dump(n: Node) -> dict[str, Any]:
+            d = n.model_dump(mode="json")
+            if n.kind is NodeKind.LLM:
+                d.pop("kind", None)
+            if not n.knobs.tunable:
+                d.pop("tunable", None)
+            return d
+
+        nodes = sorted((_node_dump(n) for n in self.nodes), key=lambda n: n["node_id"])
         edges = sorted(
             (e.model_dump(mode="json", by_alias=True) for e in self.edges),
             key=lambda e: (e["from"], e["to"], e["type"]),

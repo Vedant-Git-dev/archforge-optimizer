@@ -23,7 +23,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from archforge.models import EdgeType, Spec
+from archforge.models import EdgeType, NodeKind, Spec
 
 # Lint error codes — stable identifiers so tests and the Architect can branch on
 # them. Keep the set small; add codes only when a new structural fault appears.
@@ -38,6 +38,7 @@ LintCode = Literal[
     "conditional_no_gate",
     "tool_id_empty",
     "tool_id_duplicate",
+    "node_unknown_kind",
 ]
 
 
@@ -77,6 +78,21 @@ def lint(spec: Spec) -> list[LintError]:
                                         location=n.node_id))
             else:
                 tool_seen.add(tid)
+        # node-kind rule (non-LLM optimizer extension). A bad `kind` value is
+        # normally rejected by pydantic's enum coercion at construction — this is
+        # a defense-in-depth guard for a model_construct / hand-edit path that
+        # bypassed validation. We deliberately do NOT require non-empty
+        # system_prompt/model on LLM nodes: this project's config-decay contract
+        # (`host/adapters/helpers.cfg_decay` -> `KnobVote`) treats an empty
+        # system_prompt as "the agent owns its prompt" and a None model as "the
+        # agent's hardcoded default". Requiring them would regress the established
+        # "text-in/text-out node need not declare one" SpecBuilder contract and
+        # break every legacy text-in/text-out Spec on lint — violating the design's
+        # own "legacy Specs load unchanged" back-compat guarantee.
+        if not isinstance(n.kind, NodeKind):
+            errors.append(LintError(code="node_unknown_kind",
+                                    message=f"node '{n.node_id}' has an unknown kind {n.kind!r}",
+                                    location=n.node_id))
 
     # --- edge endpoints + per-edge rules ------------------------------------
     edge_keys: set[tuple[str, str, str]] = set()

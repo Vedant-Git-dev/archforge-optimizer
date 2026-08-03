@@ -121,10 +121,17 @@ class BaseAgent:
         model: str | None,
         knobs: m.Knobs | None,
         tools: list[str] | None,
+        kind: m.NodeKind = m.NodeKind.LLM,
     ) -> AgentResponse:
         """Kit-owned: fulfils the `Agent` protocol. Applies config-decay, calls
         the node's real work, packs an AgentResponse that records *content* and
         carries *plumbing* onward via the `thread` extra.
+
+        `kind` is accepted for protocol parity with the middleware (which threads
+        the live node's `NodeKind` to every wrapped agent) and defaults to `LLM`
+        so existing kit adapters keep working unchanged. It is UNUSED here: a kit
+        adapter that needs kind-specific behaviour reads `self._node.kind` in its
+        `call` override (the node is already held on the agent).
         """
         vote = self._adapter.cfg_for(self.node_id, system_prompt, model, knobs, tools)
         t0 = time.perf_counter()

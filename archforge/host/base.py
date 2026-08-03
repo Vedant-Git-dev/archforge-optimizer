@@ -58,9 +58,14 @@ class Agent(Protocol):
     """Host-provided implementation of one node's behaviour.
 
     Concrete hosts wrap their framework agent here. `invoke` receives the Spec's
-    configuration (`system_prompt`, `model`, `knobs`, `tools`) so the same agent
-    is reconfigured when the spec evolves — without rebuilding the host. The
+    configuration (`system_prompt`, `model`, `knobs`, `tools`, `kind`) so the same
+    agent is reconfigured when the spec evolves — without rebuilding the host. The
     middleware is what actually supplies these arguments at call time.
+
+    `kind` (the node's `NodeKind`) is OPTIONAL and defaults to `LLM` so every
+    pre-existing adapter that knows only LLM agents keeps working unchanged; a
+    host that dispatches on kind (e.g. the fake kit's rule/retriever/tool agents)
+    reads it to choose its behaviour. It carries NO cost on adapters that ignore it.
     """
 
     node_id: str
@@ -74,6 +79,7 @@ class Agent(Protocol):
         model: str,
         knobs: m.Knobs,
         tools: list[str],
+        kind: m.NodeKind = m.NodeKind.LLM,
     ) -> AgentResponse: ...
 
 

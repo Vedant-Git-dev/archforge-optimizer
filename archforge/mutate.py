@@ -70,6 +70,22 @@ def apply_prompt_edit(spec: m.Spec, node_id: str, new_prompt: str) -> m.Spec:
 
 def apply_knob(spec: m.Spec, node_id: str, **knob_overrides: Any) -> m.Spec:
     node = _node(spec, node_id)
+    # The optimizer's ONE safety gate for the opened Knobs bag. The three NAMED
+    # knobs are ALWAYS editable (so every legacy LLM Spec — whose `tunable`
+    # defaults to () — keeps its historical temperature/retries/max_tokens tuning
+    # unchanged). An EXTRA (open-bag) key — top_k/threshold/endpoint… — is editable
+    # only if the node's `tunable` allowlist lists it; anything else is a host-owned
+    # value the LLM Architect must not touch, so we refuse with MutationError. That
+    # raise routes through next_attempt's try/except -> _lint_rejected (E5): the
+    # candidate is discarded this cycle, the loop continues — nothing committed.
+    _NAMED_KNOBS = frozenset({"temperature", "retries", "max_tokens"})
+    allowed = _NAMED_KNOBS | set(node.knobs.tunable)
+    bad = set(knob_overrides) - allowed
+    if bad:
+        raise MutationError(
+            f"node '{node_id}': knob(s) {sorted(bad)} not editable "
+            f"(tunable={list(node.knobs.tunable) or '—'})"
+        )
     knobs = node.knobs.model_copy(update=knob_overrides)
     return _replace_node(spec, node_id, knobs=knobs)
 
