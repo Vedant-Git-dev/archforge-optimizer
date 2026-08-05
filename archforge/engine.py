@@ -28,6 +28,7 @@ scripted variants per `--provider` config. Departmental rules honored:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Callable
 
 from archforge import userconfig as ucfg
 import archforge.models as m
@@ -136,6 +137,7 @@ class Engine:
         suite: Suite,
         thresholds: m.Thresholds | None = None,
         config: EngineConfig | None = None,
+        on_promote: Callable[[m.Spec], None] | None = None,
     ) -> None:
         self._host = host
         self._judge = judge
@@ -146,6 +148,7 @@ class Engine:
         self._suite = suite
         self._th = thresholds or m.Thresholds()
         self._cfg = config or EngineConfig()
+        self._on_promote = on_promote
         self._runner = SuiteRunner(host, judge, trace_store,
                                     epsilon=self._th.unrunnable_frac,
                                     judge_retries=ucfg.get("DEFAULT_JUDGE_RETRIES"))
@@ -190,6 +193,15 @@ class Engine:
         )
         decision = self._gatekeeper.decide(attempt_id, cand_run, inc_run)
         applied = self._gatekeeper.apply_decision(decision)
+
+        # Deploy hook (Tier-2 sidecar auto-sync): an opt-in callback fired ONLY on
+        # an AUTO_PROMOTE — i.e. the candidate just became the active incumbent.
+        # The callback owns any side effect (e.g. export_spec_sidecar → a JSON file
+        # the MAS overlays onto its config consts so the win reaches production
+        # without the Forge on the hot path). Not fired for QUEUE_HUMAN (a human
+        # gate) or a discard. The engine does no I/O; the callback does.
+        if self._on_promote is not None and decision.action is Action.AUTO_PROMOTE:
+            self._on_promote(self._specs.get(candidate_spec_id))
 
         # Persist the scored result so the human-facing surfaces (status, report,
         # Approval Queue) show the real delta + cost without re-running the suite.

@@ -16,9 +16,20 @@ from archforge.host.adapters.base import (
 from archforge.host.adapters.helpers import (
     KnobVote, cfg_as_kwargs, cfg_decay, estimate_tokens, run_id, topo_order,
 )
+# LangGraph adapter — re-exported eagerly. The module is langgraph-FREE (it
+# imports no langgraph types; the dependency enters only when a concrete app's
+# `graph_factory` builds the real graph), so importing it here keeps
+# `import archforge` framework-free.
+from archforge.host.adapters.langgraph import (
+    EdgeSpec, LangGraphApp, LangGraphHostAdapter, LangGraphRunnable, Nd,
+    export_spec_sidecar, load_spec_sidecar,
+)
 
 __all__ = [
     "BaseHostAdapter", "BaseAgent", "BasePipeline", "CallResult", "RunContext",
     "run_id", "topo_order", "cfg_decay", "cfg_as_kwargs", "KnobVote",
     "estimate_tokens",
+    "Nd", "EdgeSpec", "LangGraphApp", "LangGraphHostAdapter",
+    "LangGraphRunnable",
+    "export_spec_sidecar", "load_spec_sidecar",
 ]

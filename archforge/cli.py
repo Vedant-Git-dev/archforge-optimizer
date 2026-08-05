@@ -193,7 +193,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # --- evolve-loop ---------------------------------------------------------
     evl = sub.add_parser("evolve-loop",
-                         help="repeat evolve until the budget cap or a plateau (E3/E8)")
+                         help="repeat evolve until the budget cap or a plateau")
     _add_store_args(evl)
     _add_evolve_args(evl, loop=True)
 
