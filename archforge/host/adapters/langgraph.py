@@ -51,7 +51,9 @@ from archforge.middleware import TracingMiddleware
 
 # The named LLM knobs flow through the call-time injector, NOT state. These are
 # the Knobs model's defined fields to exclude when overlaying state-routed extras.
-_NAMED_KNOBS = frozenset({"temperature", "retries", "max_tokens", "tunable"})
+# Lifted into ``archforge.models._NAMED_KNOBS`` as the single source of truth
+# (shared with ``archforge.diff``); referenced here as ``m._NAMED_KNOBS``.
+_NAMED_KNOBS = m._NAMED_KNOBS
 
 
 # --------------------------------------------------------------------------- #
@@ -362,6 +364,8 @@ __all__ = [
     "Nd", "EdgeSpec", "LangGraphApp",
     "LangGraphHostAdapter", "LangGraphRunnable",
     "export_spec_sidecar", "load_spec_sidecar",
+    "build_optimized_envelope", "export_optimized", "load_optimized",
+    "ENVELOPE_SCHEMA",
 ]
 
 
@@ -432,4 +436,145 @@ def load_spec_sidecar(path: str | Path) -> dict[str, dict[str, Any]]:
     """Read a sidecar written by ``export_spec_sidecar`` → ``{node_id: {knob}}``.
 
     The per-MAS consumer wraps this with its ``node.knob → config field`` map."""
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+# --------------------------------------------------------------------------- #
+# Unified deployment config — the optimized.json envelope (improvement #4)
+# --------------------------------------------------------------------------- #
+#
+# The bare sidecar (``export_spec_sidecar``) ships only ``{node_id:{knob}}`` —
+# enough to overlay the MAS's config consts, but it carries none of the *why*.
+# The envelope is the single file production loads to apply the winner AND audit
+# it: the knobs (today's sidecar body, nested under ``knobs``) plus the lineage,
+# the Gatekeeper decision, and the scores that justified the promote. One artifact
+# → Tier-2 deploy: the MAS reads ``envelope["knobs"]`` (a one-line change to a
+# consumer like AEDE's ``aede_sidecar``), the rest is human-readable provenance.
+# Rollback is deleting the file; the diff is what Git shows between promotes.
+#
+# `knobs` is NESTED UNDER the key named `knobs` (vs the sidecar's flat top level)
+# so the envelope has room for `schema`/`spec_id`/`scores`/… alongside it. The
+# per-MAS consumer changes ONE line: `load_spec_sidecar(path)` →
+# `load_optimized(path)["knobs"]`. That AEDE consumer edit is OUT OF SCOPE here
+# (tracked by the AEDE integration tasks); this module ships the producer.
+
+ENVELOPE_SCHEMA = "archforge.optimized/v1"
+
+
+def _score_dims(run: Any) -> list[dict[str, Any]]:
+    """Reduce a SuiteRun's per-RunScore sub-rubrics to a stable dim summary.
+
+    A ``SuiteRun`` (``archforge.suite``) carries a list of ``m.RunScore`` (one per
+    scored repeat), each with a ``rubric_scores: {dim: score}`` map. For the
+    envelope we want the mean per rubric dimension across the candidate's scored
+    repeats — the same dimensions the Gatekeeper's mean aggregates. Tolerant: any
+    duck-typed ``SuiteRun``-like (the engine passes the real one; tests may pass
+    a lighter object) with optional ``scores``/``aggregate``.
+    """
+    scores = getattr(run, "scores", None) or []
+    sums: dict[str, float] = {}
+    n: dict[str, int] = {}
+    for rs in scores:
+        dims = getattr(rs, "rubric_scores", None) or {}
+        for dim, val in dims.items():
+            try:
+                v = float(val)
+            except (TypeError, ValueError):
+                continue
+            sums[dim] = sums.get(dim, 0.0) + v
+            n[dim] = n.get(dim, 0) + 1
+    return [{"dim": d, "mean": round(sums[d] / n[d], 4)} for d in sums]
+
+
+def build_optimized_envelope(
+    spec: m.Spec,
+    *,
+    parent: m.Spec | None,
+    promoted_at_cycle: int,
+    decision: "Decision | None" = None,
+    cand_run: "Any | None" = None,
+    inc_run: "Any | None" = None,
+) -> dict[str, Any]:
+    """The unified deployment config — knobs + provenance (improvement #4).
+
+    Shape (``archforge.optimized/v1``)::
+
+        {"schema": "archforge.optimized/v1",
+         "spec_id": <candidate id>, "parent_spec_id": <parent id | None>,
+         "promoted_at_cycle": <int>,
+         "decision": {"action": "auto_promote", "rule": <by_rule>,
+                      "margin": <±float>, "reason": <str>} | None,
+         "scores": {"mean": <cand mean>, "incumbent_mean": <inc mean | None>,
+                    "dims": [{"dim","mean"}], "rubric_id": <str|None>,
+                    "suite_id": <str|None>, "tokens": <int>, "latency_ms": <float>} | None,
+         "knobs": {node_id: {knob: value}, ...}}   # == today's sidecar body
+
+    ``knobs`` is byte-identical to ``export_spec_sidecar``'s body (same
+    ``_node_knob_projection``, same empty-node drop), so a consumer already reading
+    the bare sidecar switches by reading ``env["knobs"]`` instead of the top level.
+    ``decision``/``scores`` are ``None`` when the caller omits them (an embedder
+    building an envelope outside a promote context still gets the knobs + lineage).
+    """
+    # `knobs` is exactly the sidecar body — the consumer-compat seam.
+    knobs = {n.node_id: _node_knob_projection(n) for n in spec.nodes if n.node_id}
+    knobs = {nid: kv for nid, kv in knobs.items() if kv}
+
+    env: dict[str, Any] = {
+        "schema": ENVELOPE_SCHEMA,
+        "spec_id": spec.spec_id or spec.compute_spec_id(),
+        "parent_spec_id": getattr(parent, "spec_id", None) or
+                          (parent.compute_spec_id() if parent is not None else None),
+        "promoted_at_cycle": promoted_at_cycle,
+        "decision": None,
+        "scores": None,
+        "knobs": knobs,
+    }
+    if decision is not None:
+        env["decision"] = {
+            "action": getattr(decision.action, "value", str(decision.action)),
+            "rule": decision.by_rule,
+            "margin": decision.margin,
+            "reason": decision.reason,
+        }
+    if cand_run is not None:
+        inc_mean = getattr(inc_run, "mean", None) if inc_run is not None else None
+        env["scores"] = {
+            "mean": getattr(cand_run, "mean", None),
+            "incumbent_mean": inc_mean,
+            "dims": _score_dims(cand_run),
+            "rubric_id": getattr(cand_run, "rubric_id", None),
+            "suite_id": getattr(cand_run, "suite_id", None),
+            "tokens": getattr(cand_run, "tokens", 0),
+            "latency_ms": getattr(cand_run, "latency_ms", 0.0),
+        }
+    return env
+
+
+def export_optimized(
+    spec: m.Spec, path: str | Path, *,
+    parent: m.Spec | None = None, promoted_at_cycle: int = 0,
+    decision: "Decision | None" = None, cand_run: "Any | None" = None,
+    inc_run: "Any | None" = None,
+) -> dict[str, Any]:
+    """Write ``build_optimized_envelope(...)`` to ``path`` as ``indent=2`` JSON.
+
+    Returns the envelope dict (for in-process use / testing). Stable: nodes in
+    Spec order, knobs in insertion order; ``indent=2 sort_keys=False`` so the
+    between-promote Git diff is readable. The CLI's ``on_deploy`` wires this to
+    ``<root>/optimized.json`` on every AUTO_PROMOTE — Tier-2 deploy auto-synced.
+    """
+    env = build_optimized_envelope(
+        spec, parent=parent, promoted_at_cycle=promoted_at_cycle,
+        decision=decision, cand_run=cand_run, inc_run=inc_run,
+    )
+    Path(path).write_text(json.dumps(env, indent=2, default=str), encoding="utf-8")
+    return env
+
+
+def load_optimized(path: str | Path) -> dict[str, Any]:
+    """Read an envelope written by ``export_optimized`` (the unified deploy file).
+
+    The per-MAS consumer reads ``env["knobs"]`` (the sidecar body) and overlays it
+    onto its config; the rest is provenance for human review. (Bare sidecar
+    consumers keep ``load_spec_sidecar``; this is the envelope's loader.)"""
     return json.loads(Path(path).read_text(encoding="utf-8"))

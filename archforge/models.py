@@ -94,6 +94,20 @@ STRUCTURAL_KINDS: frozenset[ChangeKind] = frozenset(
     {ChangeKind.ADD_NODE, ChangeKind.REMOVE_NODE, ChangeKind.REWIRE, ChangeKind.MODEL_SWAP}
 )
 
+# The Knobs model's named fields, as a frozenset of field names. Single source of
+# truth shared by the host adapter (excludes these when overlaying state-routed
+# extras + when projecting a Spec's live knobs to a deploy sidecar) and by the
+# spec-diff module (classifies a knob field as a named knob vs a kind-specific
+# extra). Includes ``tunable`` — it is Knobs metadata (which extras are editable),
+# NOT an editable knob value itself, so it is excluded from both the state overlay
+# and the projected knob map. Kept here (core) so ``archforge/diff.py`` need not
+# import the langgraph adapter. NB: ``archforge/mutate.py`` keeps its OWN local
+# ``_NAMED_KNOBS`` (without ``tunable``) for the editable-knob allowlist — a
+# different set for a different purpose; do not conflate.
+_NAMED_KNOBS: frozenset[str] = frozenset(
+    {"temperature", "retries", "max_tokens", "tunable"}
+)
+
 
 # --------------------------------------------------------------------------- #
 # Pipeline Spec — the optimized artifact

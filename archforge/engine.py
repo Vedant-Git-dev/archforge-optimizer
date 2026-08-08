@@ -92,6 +92,43 @@ class LoopResult:
     final_incumbent_mean: float | None = None
 
 
+@dataclass
+class CycleCtx:
+    """Side-channel context the ``on_cycle`` hook needs but ``CycleResult`` lacks.
+
+    ``CycleResult`` carries the decision + aggregate means + cost, NOT the two
+    Specs (needed for the mutation diff) nor the full ``SuiteRun`` objects (needed
+    for per-task + rubric-dim rendering) nor the ``Change`` record. All four live
+    in ``evolve_cycle``'s scope; this is the bag the hook reads. ``CycleResult`` is
+    passed alongside it (the hook gets ``(result, ctx)``) so the callback can see
+    the persisted attempt's identity + the verdict, not just the inputs.
+    """
+
+    parent_spec: m.Spec
+    candidate_spec: m.Spec
+    cand_run: SuiteRun
+    inc_run: SuiteRun
+    change: m.Change
+
+
+@dataclass
+class DeployCtx:
+    """Context for the ``on_deploy`` hook — what an AUTO_PROMOTE just shipped.
+
+    Richer than ``on_promote``'s single-Spec payload: the parent (for the
+    envelope's lineage + diff), the ``Decision`` (rule + margin), the two
+    ``SuiteRun``s (the scores block), and the cycle index — everything a
+    ``build_optimized_envelope`` needs. ``on_promote`` stays as-is for back-compat;
+    this is the new richer seam the CLI wires for the unified deploy artifact.
+    """
+
+    parent: m.Spec
+    decision: Decision
+    cand_run: SuiteRun
+    inc_run: SuiteRun
+    promoted_at_cycle: int
+
+
 # --------------------------------------------------------------------------- #
 # The engine
 # --------------------------------------------------------------------------- #
@@ -138,6 +175,8 @@ class Engine:
         thresholds: m.Thresholds | None = None,
         config: EngineConfig | None = None,
         on_promote: Callable[[m.Spec], None] | None = None,
+        on_cycle: Callable[[CycleResult, CycleCtx], None] | None = None,
+        on_deploy: Callable[[m.Spec, DeployCtx], None] | None = None,
     ) -> None:
         self._host = host
         self._judge = judge
@@ -149,6 +188,17 @@ class Engine:
         self._th = thresholds or m.Thresholds()
         self._cfg = config or EngineConfig()
         self._on_promote = on_promote
+        # Opt-in per-cycle + deploy hooks (default None -> byte-identical when
+        # absent, so Engines built without them — existing tests, embedders that
+        # only use `on_promote` — are unchanged). `on_cycle` fires on every
+        # ATTEMPTED cycle (promote/queue/discard) AFTER the result is persisted,
+        # carrying the richer `CycleCtx` side channel (specs + SuiteRuns + Change).
+        # `on_deploy` fires ONLY on AUTO_PROMOTE alongside `on_promote` (kept as-is
+        # for back-compat) — the new richer seam the CLI wires to write the unified
+        # `optimized.json`. The CLI wires `on_deploy`, leaving `on_promote` to
+        # embedders/tests; the engine fires both when both are present.
+        self._on_cycle = on_cycle
+        self._on_deploy = on_deploy
         self._runner = SuiteRunner(host, judge, trace_store,
                                     epsilon=self._th.unrunnable_frac,
                                     judge_retries=ucfg.get("DEFAULT_JUDGE_RETRIES"))
@@ -194,15 +244,6 @@ class Engine:
         decision = self._gatekeeper.decide(attempt_id, cand_run, inc_run)
         applied = self._gatekeeper.apply_decision(decision)
 
-        # Deploy hook (Tier-2 sidecar auto-sync): an opt-in callback fired ONLY on
-        # an AUTO_PROMOTE — i.e. the candidate just became the active incumbent.
-        # The callback owns any side effect (e.g. export_spec_sidecar → a JSON file
-        # the MAS overlays onto its config consts so the win reaches production
-        # without the Forge on the hot path). Not fired for QUEUE_HUMAN (a human
-        # gate) or a discard. The engine does no I/O; the callback does.
-        if self._on_promote is not None and decision.action is Action.AUTO_PROMOTE:
-            self._on_promote(self._specs.get(candidate_spec_id))
-
         # Persist the scored result so the human-facing surfaces (status, report,
         # Approval Queue) show the real delta + cost without re-running the suite.
         # `tokens` carries only the candidate-side marginal cost — the incumbent
@@ -221,7 +262,7 @@ class Engine:
             ),
         )
 
-        return CycleResult(
+        result = CycleResult(
             cycle=cycle, attempted=True, architect_status=arch, decision=decision,
             applied_attempt_id=applied.attempt_id,
             incumbent_mean=inc_run.mean,
@@ -230,12 +271,54 @@ class Engine:
             latency_ms=cand_run.latency_ms + inc_run.latency_ms,
             note=decision.reason,
         )
+        # `on_cycle` — the per-cycle surface (improvements #2/#3/#5). Fires AFTER
+        # the result is persisted (the attempt + suite_result are visible) on every
+        # attempted cycle; the callback owns rendering (the CLI's card + run-log).
+        # `CycleCtx` carries the two Specs (for the mutation diff), the two
+        # SuiteRuns (rubric dims + per-task), and the Change record — `CycleResult`
+        # alone lacks them. Not fired for `attempted=false` cycles (nothing to
+        # diff). Fires BEFORE `on_promote`/`on_deploy` so the cycle narrative prints
+        # first, then the deploy notice — the human-readable order.
+        if self._on_cycle is not None:
+            self._on_cycle(
+                result,
+                CycleCtx(parent_spec=incumbent, candidate_spec=candidate_spec,
+                         cand_run=cand_run, inc_run=inc_run, change=proposal.change),
+            )
+        # Deploy hook (Tier-2 sidecar auto-sync): an opt-in callback fired ONLY on
+        # an AUTO_PROMOTE — i.e. the candidate just became the active incumbent.
+        # The callback owns any side effect (e.g. export_spec_sidecar → a JSON file
+        # the MAS overlays onto its config consts so the win reaches production
+        # without the Forge on the hot path). Not fired for QUEUE_HUMAN (a human
+        # gate) or a discard. The engine does no I/O; the callback does.
+        if self._on_promote is not None and decision.action is Action.AUTO_PROMOTE:
+            self._on_promote(self._specs.get(candidate_spec_id))
+        # `on_deploy` — the richer deploy seam (improvement #4): fires on the same
+        # AUTO_PROMOTE as `on_promote` but carries the parent + Decision + both
+        # SuiteRuns + the cycle index, so the callback (the CLI's `_on_deploy`)
+        # can write the unified `optimized.json` envelope without re-reading the
+        # stores. `on_promote` stays for back-compat (embedders/tests); both fire
+        # when both are wired — the CLI wires only `on_deploy`.
+        if self._on_deploy is not None and decision.action is Action.AUTO_PROMOTE:
+            self._on_deploy(
+                self._specs.get(candidate_spec_id),
+                DeployCtx(parent=incumbent, decision=decision, cand_run=cand_run,
+                          inc_run=inc_run, promoted_at_cycle=cycle),
+            )
+        return result
 
     # ----------------------------------------------------------------- the loop
     def evolve_loop(self) -> LoopResult:
         """Repeat `evolve_cycle` until budget cap or plateau (E3/E8)."""
         out = LoopResult()
         plateau_streak = 0
+        # spec_id -> mean, for each spec promoted THIS run. A just-promoted
+        # incumbent's baseline may not yet be in `_baseline_cache` (its run was the
+        # candidate's, cached iff a later cycle baselines it); this map lets the
+        # loop tail surface `final_incumbent_mean` from the promoting cycle's
+        # `candidate_mean` WITHOUT re-scoring. (Trivial-bug fix: it was never
+        # populated, so the summary always read `final_mean=-`.)
+        promoted_means: dict[str, float] = {}
         for i in range(self._cfg.max_cycles):
             if self._over_total_budget():
                 out.aborted = True
@@ -254,6 +337,14 @@ class Engine:
             if r.promoted:
                 out.promotions += 1
                 plateau_streak = 0
+                # The candidate just became the active incumbent. Record its mean
+                # so the loop tail can surface `final_incumbent_mean` WITHOUT
+                # re-scoring it: its `cand_run` was the candidate run, NOT cached
+                # as a baseline, so `_baseline_for(<new active>)` would re-score
+                # it (an unwanted extra suite run). This map is the zero-scoring
+                # path for the promoted case.
+                if r.candidate_mean is not None and self._specs.active_id() is not None:
+                    promoted_means[self._specs.active_id()] = r.candidate_mean
             elif r.queued:
                 out.queued += 1
                 plateau_streak = 0        # a queued change is forward progress
@@ -267,6 +358,21 @@ class Engine:
                 out.plateaued = True
                 break
         out.final_incumbent_id = self._specs.active_id()
+        # `final_incumbent_mean` — trivial-bug fix (was never populated → always
+        # `-`). Prefer the just-promoted mean (zero scoring); else the baseline
+        # cache, but ONLY if already scored this run (never force a fresh suite
+        # run just to fill a summary field — a no-promotion plateau loop that
+        # never proposed has no scored mean, and `-` is the honest value then).
+        final_id = out.final_incumbent_id
+        if final_id is not None:
+            if final_id in promoted_means:
+                out.final_incumbent_mean = promoted_means[final_id]
+            else:
+                cached = self._baseline_cache.get(final_id)
+                if (cached is not None
+                        and (cached.rubric_id, cached.suite_id)
+                            == (self._suite.rubric_id, self._suite.suite_id)):
+                    out.final_incumbent_mean = cached.mean
         return out
 
     # ----------------------------------------------------------------- helpers
@@ -321,4 +427,5 @@ def _status_note(arch: ArchitectResult) -> str:
 
 __all__ = [
     "Engine", "EngineConfig", "CycleResult", "LoopResult", "CycleAborted",
+    "CycleCtx", "DeployCtx",
 ]

@@ -32,19 +32,24 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import archforge.models as m
 from archforge.architect import Architect, ArchitectProtocol, ScriptedArchitect
-from archforge.engine import CycleResult, Engine, EngineConfig, LoopResult
+from archforge.diff import format_diff, spec_diff
+from archforge.engine import (
+    CycleCtx, CycleResult, DeployCtx, Engine, EngineConfig, LoopResult,
+)
 from archforge.gatekeeper import Gatekeeper
 from archforge.host.base import HostMAS, Task
 from archforge.host.fake import FakeHostMAS
 from archforge.judge import ScriptedJudge
 from archforge.judge.base import Judge, JudgeProtocol, default_rubric
 from archforge.lint import lint
+from archforge.runlog import RunLog
 from archforge.stores import AttemptStore, SpecStore, TraceStore
 from archforge.suite import Suite, load_suite_file
 from archforge.config_init import archforge_config_text, env_example_text, _DEFAULT_SUITE_JSON
@@ -489,15 +494,69 @@ def _cmd_evolve(args: argparse.Namespace, *, components: Components | None,
         organs = Components(host=_import_adapter(adapter_path), judge=organs.judge,
                             architect=organs.architect, suite=organs.suite)
 
+    # The expressive surfaces (improvements #2/#3/#4/#5) wire through the Engine's
+    # opt-in hooks (on_cycle fires each attempted cycle; on_deploy fires on a
+    # promote). `on_cycle` renders the legacy line + the compact card to stdout
+    # AND appends a JSON form to a fail-soft run-log (``<root>/runs/last.json``);
+    # `on_deploy` writes the unified ``optimized.json`` envelope (Tier-2 deploy,
+    # auto-synced from the CLI — improvement #4). When the hook fires, the legacy
+    # `_print_cycle`/`_print_loop` must NOT re-print the per-cycle line (the hook
+    # already did); `hooks_wired` gates that fallback.
+    runlog = RunLog(Path(args.root) / "runs" / "last.json")
+    if not runlog.enabled:
+        print(f"  (run log disabled: {runlog.reason})")
+    optimized_path = Path(args.root) / "optimized.json"
+
+    def _on_cycle(result: CycleResult, ctx: CycleCtx) -> None:
+        # Per-cycle visibility (hooks fire DURING the run, so evolve-loop now shows
+        # each cycle, not just the final summary). The legacy one-liner (kept
+        # verbatim — the integration tests assert its substrings) PLUS the card.
+        _print_cycle(result)
+        if result.attempted:
+            print(render_card(result, ctx))
+        runlog.append_cycle(card_to_json(result, ctx))
+
+    def _on_deploy(spec: m.Spec, dctx: DeployCtx) -> None:
+        # Tier-2 deploy auto-synced from the CLI (improvement #4): one
+        # ``optimized.json`` production loads to apply the winner — knobs + lineage
+        # + the decision + scores that justified the promote. Printed notice keeps
+        # the user informed; the file is the artifact (rollback = delete it).
+        try:
+            from archforge.host.adapters import export_optimized
+        except ImportError:                                  # pragma: no cover
+            return
+        export_optimized(spec, optimized_path, parent=dctx.parent,
+                         promoted_at_cycle=dctx.promoted_at_cycle,
+                         decision=dctx.decision, cand_run=dctx.cand_run,
+                         inc_run=dctx.inc_run)
+        print(f"  deployed: {optimized_path}  "
+              f"spec_id={spec.spec_id or spec.compute_spec_id()[:8]}  "
+              f"(knobs + scores + decision)")
+
     engine = Engine(
         host=organs.host, judge=organs.judge, architect=organs.architect,
         spec_store=specs, attempt_store=atts, trace_store=traces,
         suite=organs.suite, thresholds=_thresholds(args), config=_config(args),
+        on_cycle=_on_cycle, on_deploy=_on_deploy,
     )
 
     if not loop:
-        return _print_cycle(engine.evolve_cycle(cycle=0))
-    return _print_loop(engine.evolve_loop())
+        engine.evolve_cycle(cycle=0)
+        # `on_cycle` already printed the line + card; no post-hoc re-print.
+        return 0
+    lr = engine.evolve_loop()
+    # `on_cycle` printed each cycle's line + card live; the loop summary is the
+    # only post-hoc print (legacy one-liner kept verbatim + the summary block).
+    print(f"{PROG} evolve-loop: cycles_run={lr.cycles_run} promotions={lr.promotions} "
+          f"queued={lr.queued} plateaued={'true' if lr.plateaued else 'false'} "
+          f"aborted={'true' if lr.aborted else 'false'} "
+          f"final_incumbent={lr.final_incumbent_id} "
+          f"final_mean={lr.final_incumbent_mean if lr.final_incumbent_mean is not None else '-'!s}")
+    if lr.aborted and lr.abort_reason:
+        print(f"  abort_reason: {lr.abort_reason}")
+    print(summary_block(lr))
+    runlog.write_summary(summary_to_json(lr))
+    return 0
 
 
 def _print_cycle(r: CycleResult) -> int:
@@ -519,15 +578,132 @@ def _print_cycle(r: CycleResult) -> int:
     return 0
 
 
-def _print_loop(r: LoopResult) -> int:
-    print(f"{PROG} evolve-loop: cycles_run={r.cycles_run} promotions={r.promotions} "
-          f"queued={r.queued} plateaued={'true' if r.plateaued else 'false'} "
-          f"aborted={'true' if r.aborted else 'false'} "
-          f"final_incumbent={r.final_incumbent_id} "
-          f"final_mean={r.final_incumbent_mean if r.final_incumbent_mean is not None else '-'!s}")
-    if r.aborted and r.abort_reason:
-        print(f"  abort_reason: {r.abort_reason}")
-    return 0
+# --------------------------------------------------------------------------- #
+# Expressive surfaces — the cycle card (#2/#3/#5) + loop summary (#5)
+# --------------------------------------------------------------------------- #
+#
+# The legacy one-liners above stay verbatim (the integration tests assert their
+# substrings). The card is APPENDED after the legacy line: a 4-line block carrying
+# the mutation diff (#2), the cand-vs-inc rubric scores, the cost delta, and the
+# rejection/accept explanation (#3). It renders BOTH to stdout AND to a JSON run
+# log (improvement #5's "file" sink) when a RunLog is wired. `attempted=false`
+# cycles print only the legacy line (nothing to diff). The envelope (#4) is
+# written by `_on_deploy` on AUTO_PROMOTE; the loop summary card is printed +
+# logged at the end.
+
+def _fmt_dims(run) -> str:
+    """Compact ``corr X.XX compl X.XX`` from a SuiteRun's per-repeat rubric
+    dims. Tolerant of a None run or a run with no scores (-> empty)."""
+    if run is None:
+        return ""
+    sums: dict[str, float] = {}
+    n: dict[str, int] = {}
+    for rs in getattr(run, "scores", None) or []:
+        for dim, val in (getattr(rs, "rubric_scores", None) or {}).items():
+            try:
+                v = float(val)
+            except (TypeError, ValueError):
+                continue
+            sums[dim] = sums.get(dim, 0.0) + v
+            n[dim] = n.get(dim, 0) + 1
+    parts = [f"{d} {sums[d] / n[d]:.2f}" for d in sums]
+    return " ".join(parts)
+
+
+def render_card(result: CycleResult, ctx: CycleCtx) -> str:
+    """The compact 4-line card appended after the legacy cycle line (#2/#3/#5).
+
+    The lines (intentionally short — full per-step breakdown stays in the
+    persisted JSON + ``report``)::
+
+        change: <Change.kind> on "<target>" — <field: old -> new | roster delta>
+        scores: cand <m.mm> [dims] vs inc <m.mm> [dims]
+        cost:   tokens +<Δ> (inc I → cand C)  latency +<Δ>ms
+        why:    <Decision.reason>  (rule=<by_rule>)
+
+    The ``change`` line uses ``spec_diff`` (real field-level before/after, since
+    the mutator's ``payload`` evaporates) summarized via ``format_diff``. Empty
+    diff (candidate == parent, e.g. a no-op proposal that passed lint) renders
+    ``(no change)``. Returns the block WITHOUT a trailing newline so callers can
+    join pipes; printing callers add the newline.
+    """
+    ch = ctx.change
+    entries = spec_diff(ctx.parent_spec, ctx.candidate_spec)
+    change_line = format_diff(entries)
+    inc = ctx.inc_run
+    cand = ctx.cand_run
+    inc_mean = f"{inc.mean:.3f}" if getattr(inc, "mean", None) is not None else "-"
+    cand_mean = f"{cand.mean:.3f}" if getattr(cand, "mean", None) is not None else "-"
+    inc_dims = _fmt_dims(inc)
+    cand_dims = _fmt_dims(cand)
+    inc_toks = getattr(inc, "tokens", 0) or 0
+    cand_toks = getattr(cand, "tokens", 0) or 0
+    inc_lat = getattr(inc, "latency_ms", 0.0) or 0.0
+    cand_lat = getattr(cand, "latency_ms", 0.0) or 0.0
+    rule = result.decision.by_rule if result.decision else ""
+    reason = (result.decision.reason if result.decision else result.note) or ""
+    action = result.decision.action.value if result.decision else "none"
+    lines = [
+        f'  change: {ch.kind.value} on "{ch.target}" — {change_line}',
+        f"  scores: cand {cand_mean} [{cand_dims}] vs inc {inc_mean} [{inc_dims}]",
+        f"  cost:   tokens +{cand_toks - inc_toks} (inc {inc_toks} → cand {cand_toks})"
+        f"  latency +{cand_lat - inc_lat:.1f}ms",
+        f"  why:    {reason}  (rule={rule}, action={action})",
+    ]
+    return "\n".join(lines)
+
+
+def card_to_json(result: CycleResult, ctx: CycleCtx) -> dict:
+    """The machine-readable form appended to the run-log (one entry per cycle)."""
+    return {
+        "cycle": result.cycle,
+        "attempted": result.attempted,
+        "action": result.decision.action.value if result.decision else None,
+        "change_kind": ctx.change.kind.value,
+        "target": ctx.change.target,
+        "diff": format_diff(spec_diff(ctx.parent_spec, ctx.candidate_spec)),
+        "incumbent_mean": result.incumbent_mean,
+        "candidate_mean": result.candidate_mean,
+        "margin": result.decision.margin if result.decision else None,
+        "by_rule": result.decision.by_rule if result.decision else None,
+        "reason": result.decision.reason if result.decision else result.note,
+        "tokens": result.tokens,
+        "latency_ms": result.latency_ms,
+    }
+
+
+def summary_block(r: LoopResult) -> str:
+    """The end-of-loop summary (#5): what changed, accept/reject, quality/cost
+    impact. Printed AFTER the legacy loop one-liner and written to the run-log."""
+    final_mean = (f"{r.final_incumbent_mean:.3f}"
+                  if r.final_incumbent_mean is not None else "-")
+    accepted = r.promotions
+    rejected = sum(1 for x in r.results if x.attempted and
+                   x.decision is not None and x.decision.action.value == "discard")
+    total_tokens = sum(x.tokens for x in r.results)
+    total_lat = sum(x.latency_ms for x in r.results)
+    outcome = ("aborted" if r.aborted else
+               ("plateaued" if r.plateaued else "ran to max_cycles"))
+    return ("\narchforge summary: "
+            f"cycles={r.cycles_run} {outcome}  "
+            f"accepted={accepted} rejected={rejected} queued={r.queued}  "
+            f"final_mean={final_mean}  "
+            f"total_tokens={total_tokens} latency={total_lat:.1f}ms")
+
+
+def summary_to_json(r: LoopResult) -> dict:
+    return {
+        "cycles_run": r.cycles_run,
+        "promotions": r.promotions,
+        "queued": r.queued,
+        "plateaued": r.plateaued,
+        "aborted": r.aborted,
+        "abort_reason": r.abort_reason,
+        "final_incumbent_id": r.final_incumbent_id,
+        "final_incumbent_mean": r.final_incumbent_mean,
+        "total_tokens": sum(x.tokens for x in r.results),
+        "total_latency_ms": sum(x.latency_ms for x in r.results),
+    }
 
 
 def _cmd_lint(path: str) -> int:
@@ -595,6 +771,19 @@ def main(argv: list[str] | None = None, *,
     real LLMs. Only the evolve-family consults `components`; `status`/`report`/
     `approve`/`reject`/`lint` read the stores directly.
     """
+
+    # Run in CWD (improvement #1): put the caller's working directory on sys.path
+    # so `--adapter module:Class` (and a host adapter that imports the project's
+    # own modules — e.g. `aede`) resolves from the dir the user runs in. Under the
+    # console script (`archforge-optimizer …`) CWD is NOT on sys.path by default,
+    # which forced the earlier `PYTHONPATH=".:.." python -m archforge` friction;
+    # under `python -m archforge` CWD is already present, so this is a no-op there.
+    # Belt-and-suspenders: insert if missing, never duplicate. All stores/suites/
+    # traces/.env are ALREADY CWD-relative via the `--root .archforge` literal, so
+    # this 3-line edit is the entirety of #1 (no path redesign needed).
+    _cwd = os.getcwd()
+    if _cwd not in sys.path:
+        sys.path.insert(0, _cwd)
 
     parser = _build_parser()
     args = parser.parse_args(argv)

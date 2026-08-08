@@ -22,7 +22,8 @@ from archforge.host.adapters.helpers import (
 # `import archforge` framework-free.
 from archforge.host.adapters.langgraph import (
     EdgeSpec, LangGraphApp, LangGraphHostAdapter, LangGraphRunnable, Nd,
-    export_spec_sidecar, load_spec_sidecar,
+    build_optimized_envelope, export_optimized, export_spec_sidecar,
+    load_optimized, load_spec_sidecar,
 )
 
 __all__ = [
@@ -32,4 +33,5 @@ __all__ = [
     "Nd", "EdgeSpec", "LangGraphApp", "LangGraphHostAdapter",
     "LangGraphRunnable",
     "export_spec_sidecar", "load_spec_sidecar",
+    "build_optimized_envelope", "export_optimized", "load_optimized",
 ]
