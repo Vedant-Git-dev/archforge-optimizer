@@ -85,6 +85,9 @@ _FIELDS: tuple[tuple[str, str, str], ...] = (
     ("DEFAULT_MAX_TOKENS_PER_CYCLE", "None", "per-cycle token cap (aborts mid-cycle if exceeded); None = no limit"),
     ("DEFAULT_MAX_WALL_MS_PER_CYCLE", "None", "per-cycle wall-clock cap (ms); aborts if exceeded — "
      "covers non-LLM nodes (retriever/tool/rule) that cost time, not tokens; None = no limit"),
+    ("DEFAULT_TRACE_TOTAL_BUDGET_TOK", "None", "total Judge-prompt token budget for OTel trace "
+     "projection of per-step LLM prompt/completion; None = lossy summarize() path (parity, "
+     "no tracing); an int turns on rich per-step Steps, shedding largest-evidence chunks first"),
 )
 
 # section break points in _FIELDS (for grouping the emitted file)

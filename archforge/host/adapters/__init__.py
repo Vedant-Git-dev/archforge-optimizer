@@ -22,16 +22,20 @@ from archforge.host.adapters.helpers import (
 # `import archforge` framework-free.
 from archforge.host.adapters.langgraph import (
     EdgeSpec, LangGraphApp, LangGraphHostAdapter, LangGraphRunnable, Nd,
-    build_optimized_envelope, export_optimized, export_spec_sidecar,
-    load_optimized, load_spec_sidecar,
+    NodeIdMap, build_optimized_envelope, export_optimized, export_spec_sidecar,
+    load_optimized, load_spec_sidecar, node_ids,
 )
+# `wrapped` is deliberately NOT re-exported at the package level: a MAS authors
+# the id ONCE in its `build_graph` via `add(name, fn)` and imports `wrapped`
+# from `archforge.host.adapters.langgraph` (the adapter module the MAS already
+# touches) — never from `archforge.otel` directly, and never from this package.
 
 __all__ = [
     "BaseHostAdapter", "BaseAgent", "BasePipeline", "CallResult", "RunContext",
     "run_id", "topo_order", "cfg_decay", "cfg_as_kwargs", "KnobVote",
     "estimate_tokens",
     "Nd", "EdgeSpec", "LangGraphApp", "LangGraphHostAdapter",
-    "LangGraphRunnable",
+    "LangGraphRunnable", "NodeIdMap", "node_ids",
     "export_spec_sidecar", "load_spec_sidecar",
     "build_optimized_envelope", "export_optimized", "load_optimized",
 ]

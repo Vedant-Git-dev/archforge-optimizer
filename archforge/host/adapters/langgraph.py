@@ -44,10 +44,33 @@ from pathlib import Path
 from typing import Any, Callable
 
 import archforge.models as m
+from archforge import userconfig as ucfg
 from archforge.host.adapters.base import BaseHostAdapter
 from archforge.host.adapters.helpers import KnobVote, estimate_tokens, run_id
 from archforge.lint import lint
 from archforge.middleware import TracingMiddleware
+
+# Re-export the OTel cooperative seam so a MAS's ``build_graph`` imports
+# ``wrapped`` from here (the adapter module it already touches) rather than
+# reaching into ``archforge.otel`` directly. ``otel`` is import-lazy (it pulls
+# NO OpenTelemetry at its top level), so merely naming it here keeps
+# ``import archforge`` / this module OTel-free; its OTel imports run lazily only
+# when ``_ensure_tracer`` / ``wrapped`` first execute. ``project`` /
+# ``_shed_to_budget`` are imported lazily INSIDE the methods that use them
+# (below), so they never load unless a budget is actually set.
+from archforge.otel import wrapped as _otel_wrapped  # noqa: E402 (lazy module; no eager OTel)
+
+
+def wrapped(name: str, fn: Callable) -> Callable:
+    """Re-exported cooperative OTel seam: wraps ``fn`` to open an
+    ``archforge.node`` span so auto-instrumented SDK calls nest as children
+    (correlation by parent-link). A MAS's ``build_graph`` routes node fns
+    through ``add(name, fn) -> g.add_node(name, wrapped(name, fn))`` so the id
+    string is authored ONCE. No-op passthrough when OTel is unavailable.
+
+    See ``archforge.otel.wrapped`` for the implementation; this thin re-export
+    is the seam the MAS imports from (the adapter it already touches)."""
+    return _otel_wrapped(name, fn)
 
 # The named LLM knobs flow through the call-time injector, NOT state. These are
 # the Knobs model's defined fields to exclude when overlaying state-routed extras.
@@ -91,6 +114,51 @@ class EdgeSpec:
     to: str
     kind: m.EdgeType = m.EdgeType.SEQUENCE
     gate: str | None = None
+
+
+# --------------------------------------------------------------------------- #
+# NodeIdMap — keyed id source (single-authoring, fail-fast on rename)
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class NodeIdMap:
+    """Keyed lookup over a compiled graph's real node names — the authority for
+    the node id string, so it is written ONCE (in ``build_graph``'s
+    ``add(name, fn)`` line) and sourced everywhere else via ``_GID["name"]``.
+
+    ``__getitem__`` validates against the compiled graph's node names (drops
+    langgraph's built-in ``__start__`` / ``__end__``) and raises ``KeyError``
+    listing the declared names on a miss → a rename in ``build_graph`` fails
+    LOUDLY at aede_app import (fail-fast per node), never a silently-mislabeled
+    run. Introspection is limited to node NAMES — the most stable surface — one
+    time at wiring; "describe, don't introspect" still protects the version-
+    fragile internals/routing the rest of the adapter avoids.
+    """
+
+    _names: tuple[str, ...]
+
+    def __getitem__(self, name: str) -> str:
+        if name not in self._names:
+            raise KeyError(
+                f"unknown node {name!r}; declared: {list(self._names)}"
+            )
+        return name            # canonical id == the add_node name
+
+    def __iter__(self):
+        return iter(self._names)
+
+    def __len__(self) -> int:
+        return len(self._names)
+
+
+def node_ids(graph: Any) -> NodeIdMap:
+    """Build a :class:`NodeIdMap` from a compiled langgraph graph's node names
+    (drops ``__start__`` / ``__end__``). Instantiating this validates the MAS's
+    ``_GID["..."]`` lookups at import time. ``graph`` is the value returned by
+    ``graph_factory()`` (i.e. a compiled ``StateGraph``)."""
+    names = tuple(n for n in graph.nodes if not str(n).startswith("__"))
+    return NodeIdMap(names)
 
 
 class LangGraphApp:
@@ -139,6 +207,18 @@ class LangGraphApp:
     runtime_loops: list[tuple[str, str]] = []
     final_output_key: str = "answer"
     base_prompts: dict[str, str] = {}
+
+    # Tracing budget (the OTel trace-projection gate):
+    #   None       -> read the ``DEFAULT_TRACE_TOTAL_BUDGET_TOK`` tunable (the
+    #                 default = None = today's lossy ``summarize()`` path ⇒ the
+    #                 existing suite stays green). Set this None too for parity.
+    #   int        -> cap the per-Judge-prompt total projected tokens; auto-instr
+    #                 SDK calls become OTel GenAI spans, :meth:`_record` projects a
+    #                 BOUNDED slice (LLM nodes only) into each ``Step`` and sheds
+    #                 the largest-evidence-chunk steps first, keeping the final-
+    #                 answer step. A per-app override lets one MAS opt in without
+    #                 touching config.
+    trace_total_budget: int | None = None
 
     # ---- behavior hooks (override me) -------------------------------------- #
     def initialize_state(self, task_input: str) -> dict[str, Any]:
@@ -221,6 +301,15 @@ class LangGraphHostAdapter(BaseHostAdapter):
         # build + validate the bootstrap Spec once (catches a malformed app early)
         self._spec = app.build_spec()
         self.base_prompts = app.base_prompts
+        # Once-per-process OTel setup: build ArchForge's TracerProvider + the
+        # in-memory span buffer and register the repo-declared auto-instrumentors.
+        # Idempotent; a no-op when OTel isn't installed (the rich path degrades
+        # gracefully to ``summarize()``). Done here — before any
+        # ``graph.stream`` — so instrumentors patch the SDKs BEFORE the first call.
+        # Lazy import keeps ``import archforge`` OTel-free; touching the module
+        # only when a host adapter is constructed.
+        from archforge.otel import _ensure_tracer
+        _ensure_tracer()
 
     def app_spec(self) -> m.Spec:
         """The bootstrap (incumbent) Spec — for ``--seed`` / seeding the store."""
@@ -264,6 +353,22 @@ class LangGraphRunnable:
         rid = run_id(sid, task.task_id, self._run_counter)
         self._run_counter += 1
         self._mw.begin_run(rid, self._spec, task.task_id)
+
+        # The trace-projection gate. ``None`` (default) = today's lossy
+        # ``summarize()`` path ⇒ identical ``Step`` s ⇒ existing suite green;
+        # an int = rich per-step Steps. A per-app ``trace_total_budget`` overrides
+        # the ``DEFAULT_TRACE_TOTAL_BUDGET_TOK`` tunable (mirrors the lazy
+        # ``ucfg.get`` pattern at engine.py:146). Resolved once per run.
+        budget = self._app.trace_total_budget
+        if budget is None:
+            budget = ucfg.get("DEFAULT_TRACE_TOTAL_BUDGET_TOK")
+        self._budget = int(budget) if isinstance(budget, int) and budget > 0 else None
+        # rich-path bookkeeping: keep a ref to each Step built during the run so
+        # the post-loop shed can mutate them IN PLACE (middleware holds the same
+        # refs → ``end_run``'s ``list(self._steps)`` sees trimmed values). Cleared
+        # per run; only populated when a budget is set.
+        self._run_steps: list[m.Step] = []
+        self._final_answer_node: str | None = None
 
         # 1. Call-time LLM config: populate the injector UP-FRONT. graph.stream
         #    emits a node only *after* it runs, so pre-population is the only
@@ -326,9 +431,27 @@ class LangGraphRunnable:
                 node_started_at = now
                 if partial:
                     merged.update(partial)
+                    # Note the node that write-sets the final-output key: the
+                    # post-loop shed protects it (the answer-bearing step always
+                    # reaches the Judge). ``partial`` is this node's state diff,
+                    # so its carrying ``final_output_key`` marks the producer.
+                    if (
+                        self._budget is not None
+                        and self._app.final_output_key in partial
+                    ):
+                        self._final_answer_node = node_name
             if current is not None:
                 now = time.perf_counter()
                 self._record(current, current_partial, now - node_started_at, merged)
+
+            # Shed to budget ON THE SUCCESS PATH only: mutate the shared Step
+            # objects in place so the Judge's total ingested text ≤ budget, the
+            # largest-evidence-chunk steps trims first, the final-answer step is
+            # protected. Skipped on the except path → a mid-run crash leaves ran
+            # Steps at their per-node caps (E4 holds).
+            if self._budget is not None and self._run_steps:
+                from archforge.otel import _shed_to_budget
+                _shed_to_budget(self._run_steps, self._final_answer_node, self._budget)
 
             final_output = merged.get(self._app.final_output_key)
             if final_output is not None and not isinstance(final_output, str):
@@ -342,27 +465,50 @@ class LangGraphRunnable:
         self, node_name: str, partial: dict, elapsed_s: float, merged: dict
     ) -> None:
         kind = self._app.kind_of(node_name)
-        resp = self._app.summarize(node_name, partial, merged)
-        # Kind-aware cost: LLM nodes cost tokens; retriever/rule/symbolic nodes
-        # cost ~0 tokens (their real cost is wall-clock — `latency_ms`).
-        tokens = estimate_tokens(resp) if kind is m.NodeKind.LLM else 0
-        self._mw._record_step(
-            m.Step(
-                node_id=node_name,
-                prompt_in="",  # LangGraph nodes read the query from state,
-                                # not a threaded text prompt.
-                response_out=resp,
-                perf=m.StepPerf(
-                    tokens=tokens,
-                    latency_ms=round(elapsed_s * 1000.0, 3),
-                ),
-            )
+        # The gated OTel trace projection. No budget (the default) → today's lossy
+        # ``summarize()`` path byte-identical (parity — the existing suite's
+        # substring/shape assertions hold). Budget set → ask ``otel.project`` for
+        # the real per-step prompt/completion captured as OTel GenAI spans under
+        # the ``archforge.node`` parent; ``None`` (no spans / capture off /
+        # non-LLM / OTel absent) → degrade gracefully back to ``summarize()``.
+        if self._budget is None:
+            resp = self._app.summarize(node_name, partial, merged)
+            prompt_in = ""            # LangGraph nodes read the query from state,
+            # Kind-aware cost: LLM nodes cost tokens; retriever/rule/symbolic ~0
+            # (their real cost is wall-clock — `latency_ms`).
+            tokens = estimate_tokens(resp) if kind is m.NodeKind.LLM else 0
+        else:
+            from archforge.otel import project as _project
+            proj = _project(node_name, kind, partial, merged)
+            if proj is None:
+                # graceful degrade: OTel absent / no child spans / non-LLM kind
+                resp = self._app.summarize(node_name, partial, merged)
+                prompt_in = ""
+                tokens = estimate_tokens(resp) if kind is m.NodeKind.LLM else 0
+            else:
+                resp = proj.response_out
+                prompt_in = proj.prompt_in
+                tokens = proj.tokens
+        step = m.Step(
+            node_id=node_name,
+            prompt_in=prompt_in,
+            response_out=resp,
+            perf=m.StepPerf(
+                tokens=tokens,
+                latency_ms=round(elapsed_s * 1000.0, 3),
+            ),
         )
+        if self._budget is not None:
+            # keep a ref so the post-loop shed can mutate this same object in
+            # place (middleware holds the same ref → end_run sees trimmed values).
+            self._run_steps.append(step)
+        self._mw._record_step(step)
 
 
 __all__ = [
     "Nd", "EdgeSpec", "LangGraphApp",
     "LangGraphHostAdapter", "LangGraphRunnable",
+    "node_ids", "NodeIdMap", "wrapped",      # the cooperative OTel seam + keyed id source
     "export_spec_sidecar", "load_spec_sidecar",
     "build_optimized_envelope", "export_optimized", "load_optimized",
     "ENVELOPE_SCHEMA",
