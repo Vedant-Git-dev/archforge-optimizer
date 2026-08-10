@@ -339,11 +339,49 @@ def _parent_id(span: Any) -> Any:
     return parent.span_id if parent is not None else None
 
 
+def _msg_content(msg: Any) -> str:
+    """Text of ONE message across the OTel-genai message shapes the installed
+    instrumentors emit:
+
+      * newer structured (``opentelemetry-util-genai`` 1.0b0; groq/openai/
+        google-genai): ``{"role":..., "parts":[{"type":"text","content":"..."},
+        ...]}`` — the text lives in ``parts[].content``, NOT a top-level
+        ``content`` key (fn-check: ``msg.get("content","")`` returns ``""`` here,
+        which silently empty-handed every projection → ``project`` → ``None`` →
+        the lossy ``summarize()`` path → Judge scored one-liners → plateau).
+      * older flat: ``{"role":..., "content":"..."}``.
+      * any other object: ``str(msg)``.
+
+    Joined with ``\\n`` across a message's parts (a part may itself be ``dict``
+    or a bare value); returns ``""`` for a textless/tool/role-only message so the
+    caller's ``_join_*`` can drop it.
+    """
+    if not isinstance(msg, dict):
+        return str(msg)
+    parts = msg.get("parts")
+    if isinstance(parts, list) and parts:           # newer structured form
+        chunks = []
+        for p in parts:
+            chunks.append(str(p.get("content", "")) if isinstance(p, dict) else str(p))
+        out = "\n".join(c for c in chunks if c)
+        if out:
+            return out
+    # older flat form (or `parts` absent/empty — fall through to `content`)
+    return str(msg.get("content", ""))
+
+
 def _messages_text(raw: Any) -> str:
-    """Render a span's messages/prompt/completion attribute to text. Handles BOTH
-    the newer JSON message-array form (``[{"role","content"}, ...]``) and a legacy
-    flat string. Returns ``""`` on any decode failure (caller treats empty →
-    degrade to ``summarize()``)."""
+    """Render a span's messages/prompt/completion attribute to text. Handles the
+    three OTel-genai shapes the installed instrumentors emit:
+
+      * newer structured: ``[{"role":..., "parts":[{"type","content"},...]}, ...]``
+      * older flat:        ``[{"role":..., "content":"..."}, ...]``
+      * a legacy flat string (not JSON).
+
+    Returns ``""`` on any decode failure (caller treats empty → degrade to
+    ``summarize()``). Per-message text via :func:`_msg_content` so both the newer
+    ``parts[]`` and the older flat ``content`` form are read.
+    """
     if raw is None:
         return ""
     if not isinstance(raw, str):
@@ -357,15 +395,10 @@ def _messages_text(raw: Any) -> str:
         except (json.JSONDecodeError, ValueError):
             return s  # not JSON after all — return verbatim
         if isinstance(parsed, list):
-            parts = []
-            for msg in parsed:
-                if isinstance(msg, dict):
-                    parts.append(str(msg.get("content", "")))
-                else:
-                    parts.append(str(msg))
-            return "\n".join(p for p in parts if p)
+            pieces = [_msg_content(msg) for msg in parsed]
+            return "\n".join(p for p in pieces if p)
         if isinstance(parsed, dict):
-            return str(parsed.get("content", parsed))
+            return _msg_content(parsed)
         return str(parsed)
     return s
 
