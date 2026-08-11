@@ -34,6 +34,7 @@ import importlib
 import json
 import os
 import sys
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -452,6 +453,72 @@ def _thresholds_for_approval() -> m.Thresholds:
     return m.Thresholds()
 
 
+def _install_resource_warning_quieteners() -> None:
+    """Suppress `ResourceWarning: unclosed <ssl.SSLSocket>` noise emitted by the
+    per-call LLM clients' (groq/google-genai) sockets closing in langgraph's
+    async executor. Extracted to module scope so the silence contract is pin-able
+    by a unit test (the mechanism took three iterations settle — see pitfall below).
+
+    A real socket's `__del__` emits these via the standard
+    `warnings.warn(..., ResourceWarning)` path — controlled by the warnings
+    FILTER, which is what makes them fiddly: a library importing after this point
+    (httpx/httpcore/chromadb/langgraph) calls `warnings.simplefilter` /
+    `filterwarnings` at import, which PREPENDS its entry above ours, and the FIRST
+    matching filter wins → a `simplefilter("ignore", ResourceWarning)` we set here
+    gets shadowed and the warnings print anyway (observed in the first CLI run).
+    The `def __init__(self)` / `threading.py:301` / `langgraph/pregel/_utils.py:235`
+    lines are tracemalloc allocation-site fingers ResourceWarning attaches to its
+    source resolution, NOT emitters.
+
+    The robust mechanism (shadow-proof): override `warnings.showwarning` — the
+    terminal sink every warning routes to AFTER the filters decide to *show* it (so
+    a library's re-armed "default" filter still routes to us, and we drop
+    ResourceWarning here). Can't be shadowed by filter re-arming. Drop
+    ResourceWarning ONLY — a real archforge DeprecationWarning stays visible for
+    debugging. Belt-and-suspenders: also silence `sys.unraisablehook` for the rare
+    `__del__`-RAISES path (a genuine bug), limited to ResourceWarning so other
+    unraisable exceptions stay loud. Scoped to the evolve command: `init`/`status`/
+    `report` + the pytest suite never enter here, retaining full warning visibility.
+    archforge opens no raw sockets itself → ResourceWarning is third-party
+    async-pool noise.
+    """
+    _default_showwarning = warnings.showwarning
+    _default_unraisable_hook = sys.unraisablehook
+
+    def _quiet_showwarning(message, category, filename, lineno, file=None,
+                           line=None):
+        if issubclass(category, ResourceWarning):
+            return
+        _default_showwarning(message, category, filename, lineno, file, line=line)
+
+    def _quiet_resource_warning(unr_args, /):
+        exc = getattr(unr_args, "exc_value", None)
+        if isinstance(exc, ResourceWarning):
+            return
+        _default_unraisable_hook(unr_args)
+
+    warnings.showwarning = _quiet_showwarning
+    sys.unraisablehook = _quiet_resource_warning
+
+
+# Activate the quietener at IMPORT time (module scope), not inside `_cmd_evolve`.
+# The unclosed-SSL ResourceWarnings emit in THREE windows: (1) import/init time
+# as libraries (httpx/langgraph/google-genai) spin up + tear down sockets, (2)
+# during the evolve run, (3) at interpreter shutdown GC. Scoping the install to
+# `_cmd_evolve` (the earlier attempt) covered only window 2 — windows 1 and 3
+# still printed (observed: a top batch with `ast.py:46` fingers before cycle 0
+# and a bottom batch with `<sys>:0` fingers after the last cycle, both printing
+# the default `Enable tracemalloc` hint). `python -m archforge.cli` imports this
+# module FIRST (it's `__main__`), so installing here runs before any provider
+# library is imported (those come lazily at evolve time per the import-laziness
+# contract) → the sink is in place for all three windows. The override is
+# shadow-proof against a library re-arming the warnings FILTER (proven in
+# tests/unit/test_cli_warning_quietener.py); a library reassigning
+# `warnings.showwarning` outright would defeat it, but none of the runtime deps
+# do that (only pytest's recorder does, and the CLI isn't under pytest).
+_install_resource_warning_quieteners()
+
+
 def _cmd_evolve(args: argparse.Namespace, *, components: Components | None,
                 loop: bool) -> int:
     # Injected `components` (the test/embedding path) always win — they ARE the
@@ -739,17 +806,17 @@ def _cmd_init(args: argparse.Namespace) -> int:
     # 2. .env.example — create once at the repo root (cwd), never overwrite.
     env_example = Path(".env.example")
     if env_example.exists():
-        print(f"kept:    {env_example}  (already present — left untouched)")
+        print(f"kept:    {env_example}  (already present)")
     else:
         env_example.write_text(env_example_text(), encoding="utf-8")
-        print(f"created: {env_example}  (copy to .env and fill in your API keys)")
+        print(f"created: {env_example}")
 
     # 3. suite.json — seed the eval-task sidecar next to archforge.py (so --root
     # relocations also move the seeded suite); never overwrite — the user may have
     # tuned the tasks. Byte-identical to the CLI's one-task fallback fixture.
     suite_path = root / "suite.json"
     if suite_path.exists():
-        print(f"kept:    {suite_path}  (already present — left untouched)")
+        print(f"kept:    {suite_path}  (already present)")
     else:
         suite_path.write_text(_DEFAULT_SUITE_JSON, encoding="utf-8")
         print(f"created: {suite_path}  (edit the tasks to change what you optimize against)")

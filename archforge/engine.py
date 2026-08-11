@@ -305,6 +305,19 @@ class Engine:
                 DeployCtx(parent=incumbent, decision=decision, cand_run=cand_run,
                           inc_run=inc_run, promoted_at_cycle=cycle),
             )
+        # Seed the baseline cache with the just-promoted candidate's run so the
+        # NEXT cycle's ``_baseline_for(new_incumbent)`` is a cache HIT (not a fresh
+        # suite run). Without this, a candidate promoted at mean M is re-scored on
+        # the next cycle as the new incumbent — Judge run-to-run variance flips M
+        # (e.g. 1.000 -> 0.800), discarding the score the Gatekeeper promoted on
+        # and injecting noise into every margin thereafter. The promoted run is the
+        # authoritative baseline: it was scored under the SAME suite/rubric (I5),
+        # validated below by the ``(rubric_id, suite_id)`` guard ``_baseline_for``
+        # applies on read. Don't seed a QUEUE_HUMAN (the human may re-ask a fresh
+        # score on approval) or a discard (the candidate isn't the incumbent).
+        if decision.action is Action.AUTO_PROMOTE:
+            key = candidate_spec_id or candidate.compute_spec_id()
+            self._baseline_cache[key] = cand_run
         return result
 
     # ----------------------------------------------------------------- the loop

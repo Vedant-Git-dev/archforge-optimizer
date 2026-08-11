@@ -28,11 +28,11 @@ from __future__ import annotations
 
 _DEFAULT_ARCHITECT_MODELS = (
     '{"anthropic": "claude-sonnet-5", "openai": "gpt-4o", '
-    '"groq": "openai/gpt-oss-120b", "gemini": "gemini-3.1-flash-lite"}'
+    '"groq": "openai/gpt-oss-120b", "gemini": "gemini-3.6-flash"}'
 )
 _DEFAULT_JUDGE_MODELS = (
     '{"anthropic": "claude-sonnet-5", "openai": "gpt-4o", '
-    '"groq": "openai/gpt-oss-120b", "gemini": "gemini-3.1-flash-lite"}'
+    '"groq": "openai/gpt-oss-120b", "gemini": "gemini-3.6-flash"}'
 )
 _DEFAULT_SUB_RUBRICS = (
     '{"correctness": "Is the final answer factually correct and aligned with the task?", '
