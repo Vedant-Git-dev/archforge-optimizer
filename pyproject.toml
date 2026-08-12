@@ -2,6 +2,7 @@
 name = "archforge"
 dynamic = ["version"]
 description = "ArchForge — a self-improving meta-layer over multi-agent systems"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.7",
@@ -10,7 +11,7 @@ dependencies = [
 
 # The installed console command — the package STILL imports as `archforge`
 # (a hyphenated name can't be imported), but the binary the user runs is
-# `archforge-optimizer`. `python -m archforge` keeps working via __main__.py.
+# `archforge-optimizer`. 
 [project.scripts]
 archforge-optimizer = "archforge.cli:main"
 
@@ -40,20 +41,19 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
-# Single source of truth: the package version is read from archforge.config
-# (renamed from constants.py), and is also re-exported as `archforge.__version__`.
-# Edit VERSION there only.
 path = "archforge/config.py"
 pattern = 'VERSION:\s*str\s*=\s*"(?P<version>[^"]+)"'
 
 [tool.hatch.build.targets.wheel]
 packages = ["archforge"]
 
+[tool.hatch.build.targets.sdist]
+include = [
+    "archforge",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Default run EXCLUDES the opt-in `smoke` marker (real, billed LLM calls).
-# Run them explicitly with:  python -m pytest -m smoke
-# (the user-passed `-m smoke` overrides this `-m "not smoke"`).
 addopts = "-ra -m 'not smoke'"
 pythonpath = ["."]
 markers = [
