@@ -1,8 +1,10 @@
 [project]
-name = "archforge"
+name = "archforge-optimizer"
 dynamic = ["version"]
 description = "ArchForge — a self-improving meta-layer over multi-agent systems"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.7",
