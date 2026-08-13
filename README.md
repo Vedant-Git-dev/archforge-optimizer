@@ -98,8 +98,8 @@ with tempfile.TemporaryDirectory() as d:
 ```
 
 ```
-$ archforge-optimizer init       # once — scaffolds the project config the Engine reads
-$ python evolve_demo.py
+archforge-optimizer init       # once — scaffolds the project config the Engine reads
+python evolve_demo.py
 action=AUTO_PROMOTE  margin=+0.15
 incumbent_mean=0.55  candidate_mean=0.70
 active_spec_id=57396a49  promoted=True

@@ -9,4 +9,4 @@ tests/
 # Keep the user-editable config (archforge.py) and suite (suite.json) trackable though.
 .archforge/*
 !.archforge/archforge.py
-!.archforge/suite.json
+!.archforge/suite.jsondist/
