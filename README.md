@@ -189,16 +189,13 @@ archforge-optimizer init
 #    archforge_optimizer/spec.json only if valid (rc=1 + the faults if not — fix + rerun).
 archforge-optimizer make-spec     # → archforge_optimizer/spec.json (lint OK)
 
-# 5. Run one Propose-Evaluate-Commit cycle against your MAS, wired by the adapter
-archforge-optimizer evolve \
-    --adapter archforge_optimizer.host:MyAdapter \
-    --seed archforge_optimizer/spec.json
+# 5. Run one Propose-Evaluate-Commit cycle against your MAS. evolve auto-defaults
+#    --adapter archforge_optimizer.host:AppAdapter and --seed archforge_optimizer/spec.json
+archforge-optimizer evolve
 
 # 6. Run the full loop: repeat evolve until K consecutive non-promotions (plateau)
-#    or a cycle/budget cap is hit
-archforge-optimizer evolve-loop \
-    --adapter archforge_optimizer.host:MyAdapter \
-    --seed archforge_optimizer/spec.json --max-cycles 50
+# or set flags in archforge.py
+archforge-optimizer evolve-loop --max-cycles 50
 
 # 7. Inspect
 archforge-optimizer status     # print the active incumbent Spec id, lineage, counts
@@ -214,7 +211,7 @@ archforge-optimizer approve --all   # move PENDING_HUMAN structural wins into ac
 >
 > **From source (development).** Clone the repo and `pip install -e .` for an editable install.
 
-The `--provider` flag selects the LLM backing the Architect + Judge (`scripted` by default for zero-cost runs; `anthropic` / `openai` / `groq` / `gemini` for real runs). The host MAS is wired via `--adapter my_pkg.my_host:MyAdapter`.
+The `--provider` flag selects the LLM backing the Architect + Judge (`anthropic` / `openai` / `groq` / `gemini` for real runs). The host MAS is wired via `--adapter my_pkg.my_host:MyAdapter` — and after `init`, `evolve` already defaults it to the `archforge_optimizer.host:AppAdapter`, so you only pass the flag for a custom adapter.
 
 ---
 
@@ -263,12 +260,12 @@ Your adapter builds a runnable pipeline from `spec` (the active incumbent's node
 
 A **generic LangGraph adapter** ships in `archforge/host/adapters/langgraph.py` and drives a real `graph.stream(...)` — "describe, don't introspect" (it reads node *names*, the stable surface; it never climbs your graph's internals). It is the easiest path for any LangGraph-based MAS. For other frameworks (CrewAI, AutoGen, raw call loops), subclass `BaseHostAdapter` (`archforge/host/adapters/base.py`) — the kit is factored so adapting *any* MAS is cheap, not bespoke-per-framework.
 
-**`init` scaffolds the adapter for you.** You don't code the wiring from scratch: `archforge-optimizer init` writes a generic, name-neutral `archforge_optimizer/` package (the LangGraph adapter skeleton above) into your project root. Edit the `# EDIT:` markers in `archforge_optimizer/app.py` to describe your MAS — the node roster (`_NODES`), edges (`_EDGES`), knob→state map, and the `summarize`/`apply_llm_config`/`reset_llm_config` hooks — then `archforge-optimizer make-spec` builds + lints `archforge_optimizer/spec.json` from it and `--adapter archforge_optimizer.host:MyAdapter` points `evolve` at it. (The scaffold is generated at `init` time from string constants in the package; the sdist/wheel still ship only `archforge/` — it is not package data.) Per-file clobber guards mean re-running `init` never overwrites your edits unless `--force`, and a missing/half-edited adapter is repaired even when `archforge.py` already exists.
+**`init` scaffolds the adapter for you.** You don't code the wiring from scratch: `archforge-optimizer init` writes a generic, name-neutral `archforge_optimizer/` package (the LangGraph adapter skeleton above) into your project root. Edit the `# EDIT:` markers in `archforge_optimizer/app.py` to describe your MAS — the node roster (`_NODES`), edges (`_EDGES`), knob to state map, and the `summarize`/`apply_llm_config`/`reset_llm_config` hooks — then `archforge-optimizer make-spec` builds + lints `archforge_optimizer/spec.json` from it. Once scaffolded, `evolve` auto-defaults to the scaffold: `--adapter archforge_optimizer.host:AppAdapter` and `--seed archforge_optimizer/spec.json` (only pass the flags for a custom adapter/seed). Per-file clobber guards mean re-running `init` never overwrites your edits unless `--force`, and a missing/half-edited adapter is repaired even when `archforge.py` already exists.
 
 Run it via the dotted-path seam — the scaffolded package uses the same `module:Class` form:
 
 ```bash
-archforge-optimizer evolve-loop --adapter archforge_optimizer.host:MyAdapter --seed archforge_optimizer/spec.json
+archforge-optimizer evolve-loop  # defaults: --adapter archforge_optimizer.host:AppAdapter --seed archforge_optimizer/spec.json
 ```
 
 ---
@@ -294,8 +291,8 @@ archforge-optimizer <command> [flags]
 | Flag | Purpose |
 |---|---|
 | `--root <dir>` | project root holding `.archforge/` (default `.`) |
-| `--seed <path>` | bootstrap the root incumbent from a Spec JSON (first run) |
-| `--adapter <dotted.path[:Class]>` | your `HostMAS` adapter |
+| `--seed <path>` | bootstrap the root incumbent from a Spec JSON (first run); defaults to `archforge_optimizer/spec.json` when present |
+| `--adapter <dotted.path[:Class]>` | your `HostMAS` adapter; defaults to `archforge_optimizer.host:AppAdapter` when the scaffold is present (not on the `--provider scripted` fake path) |
 | `--provider {scripted\|anthropic\|openai\|groq\|gemini}` | LLM backing the Architect + Judge |
 | `--suite <path>` | evaluation suite JSON (default: `.archforge/suite.json`) |
 | `--tau <float>` | promotion margin τ |
