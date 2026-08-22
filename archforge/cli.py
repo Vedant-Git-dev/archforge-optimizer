@@ -53,7 +53,9 @@ from archforge.lint import lint
 from archforge.runlog import RunLog
 from archforge.stores import AttemptStore, SpecStore, TraceStore
 from archforge.suite import Suite, load_suite_file
-from archforge.config_init import archforge_config_text, env_example_text, _DEFAULT_SUITE_JSON
+from archforge.config_init import (
+    archforge_config_text, _DEFAULT_SUITE_JSON, adapter_package_files,
+)
 
 # System config (provider roster, CLI fixtures, PROG, .env loader) — single source
 # in archforge.config. The TUNABLE defaults (tau/delta/repeats/provider/models/…)
@@ -230,12 +232,23 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_store_args(lint_p)
     lint_p.add_argument("path", help="path to a Spec JSON file")
 
-    # --- init (scaffold user config) -----------------------------------------
+    # --- init (scaffold user config + generic adapter package) ----------------
     init_p = sub.add_parser("init",
-                            help="scaffold .archforge/archforge.py + .env.example for this project")
+                            help="scaffold .archforge/archforge.py + the archforge_optimizer/ adapter package")
     _add_store_args(init_p)   # --root selects where archforge.py is written
     init_p.add_argument("--force", action="store_true",
-                        help="overwrite an existing .archforge/archforge.py")
+                        help="overwrite an existing .archforge/archforge.py + adapter package")
+
+    # --- make-spec (build spec.json from the edited adapter) ------------------
+    mk = sub.add_parser("make-spec",
+                        help="build + lint archforge_optimizer/spec.json from the edited adapter app")
+    _add_store_args(mk)
+    mk.add_argument("--adapter", metavar="DOTTED.PATH[:Class]",
+                    default="archforge_optimizer.host:AppAdapter",
+                    help="adapter module:Class whose app.build_spec() builds the Spec "
+                         "(default: archforge_optimizer.host:AppAdapter)")
+    mk.add_argument("--out", metavar="PATH", default="archforge_optimizer/spec.json",
+                    help="where to write the Spec JSON (default: archforge_optimizer/spec.json)")
 
     return parser
 
@@ -519,6 +532,23 @@ def _install_resource_warning_quieteners() -> None:
 _install_resource_warning_quieteners()
 
 
+# The scaffolded adapter package (`archforge-optimizer init`) + its make-spec output.
+# `evolve` defaults to these when present (no `--adapter`/`--seed` flag needed); the
+# flags stay for custom adapters / arbitrary seed paths.
+_SCAFFOLD_ADAPTER = "archforge_optimizer.host:AppAdapter"
+_SCAFFOLD_SPEC = "archforge_optimizer/spec.json"
+
+
+def _scaffolded_adapter_available() -> bool:
+    """True when `init` wrote the adapter package at cwd (its host.py exists)."""
+    return (Path.cwd() / "archforge_optimizer" / "host.py").is_file()
+
+
+def _scaffolded_spec_available() -> bool:
+    """True when `make-spec` produced archforge_optimizer/spec.json at cwd."""
+    return (Path.cwd() / "archforge_optimizer" / "spec.json").is_file()
+
+
 def _cmd_evolve(args: argparse.Namespace, *, components: Components | None,
                 loop: bool) -> int:
     # Injected `components` (the test/embedding path) always win — they ARE the
@@ -527,6 +557,7 @@ def _cmd_evolve(args: argparse.Namespace, *, components: Components | None,
     # works" contract): a project with no .archforge/archforge.py gets the init hint
     # and rc 1 instead of a bogus run. No-op under the pytest gate (tests use the
     # in-memory sane template).
+    components_injected = components is not None
     if components is None:
         try:
             ucfg.ensure_initialized()
@@ -544,6 +575,11 @@ def _cmd_evolve(args: argparse.Namespace, *, components: Components | None,
 
     specs, atts, traces = _stores(args.root)
 
+    # Default `--seed` to the scaffolded spec.json when the user scaffolded +
+    # ran `make-spec` (no flag needed); the flag still overrides for custom seeds.
+    if getattr(args, "seed", None) is None and _scaffolded_spec_available():
+        args.seed = _SCAFFOLD_SPEC
+
     # zero-LLM bootstrap of the root incumbent from --seed (if none active)
     active = _ensure_incumbent(args, specs)
     if active is None:
@@ -556,7 +592,15 @@ def _cmd_evolve(args: argparse.Namespace, *, components: Components | None,
     # --adapter: swap the runtime host for an external MAS adapter (a HostMAS /
     # BaseHostAdapter) while keeping the --provider organs (Architect/Judge).
     # This is the "adapt any MAS" seam: point at an adapter class, no core edit.
+    # When the user scaffolded the adapter package (`init`), DEFAULT --adapter to
+    # its AppAdapter (no flag needed); the flag still overrides for custom adapters.
+    # Skipped on the scripted fake path (FakeHostMAS is the zero-cost host) and
+    # when `components` were injected (test/embedding path owns the host).
     adapter_path = getattr(args, "adapter", None)
+    if (adapter_path is None and not components_injected
+            and _scaffolded_adapter_available()
+            and (args.provider or ucfg.get("PROVIDER")) != "scripted"):
+        adapter_path = _SCAFFOLD_ADAPTER
     if adapter_path:
         organs = Components(host=_import_adapter(adapter_path), judge=organs.judge,
                             architect=organs.architect, suite=organs.suite)
@@ -788,13 +832,48 @@ def _cmd_lint(path: str) -> int:
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
-    """Scaffold `.archforge/archforge.py` (user-editable config) + `.env.example`
-    (repo root). Never touches a real `.env`. Refuses to clobber an existing
-    `archforge.py` unless `--force`; never overwrites an existing `.env.example`."""
+    """Scaffold the ArchForge project:
+
+      - ``archforge_optimizer/`` — a generic, name-neutral LangGraph adapter skeleton
+        at the project root (cwd) whose ``# EDIT:`` markers the user fills for their MAS.
+      - ``.archforge/archforge.py`` — user-editable ACTIVE config (sane defaults).
+      - ``.archforge/suite.json`` — one-task eval sidecar (the user tunes the tasks).
+
+    Does NOT write ``.env.example`` or ``spec.json``. The user's provider API key goes
+    in the repo-root ``.env`` (gitignored); the bootstrap Spec is generated by the
+    separate ``make-spec`` command from the EDITED adapter (not a placeholder template).
+    Never touches a real ``.env``; nothing is echoed. Refuses to clobber an existing
+    ``archforge.py`` unless ``--force``; never overwrites ``suite.json``; repairs the
+    adapter per-file (only fills missing files unless ``--force``).
+
+    The adapter scaffold runs FIRST so a re-run with an existing ``archforge.py`` can
+    still restore/repair a missing or half-edited ``archforge_optimizer/`` without
+    ``--force`` — the per-file keep/``--force`` guards are independent of ``.archforge/``.
+    The ``archforge.py`` refuse-clobber then fires its rc=2 only AFTER the adapter is
+    already in place, preserving the existing contract."""
     root = Path(args.root or _DEFAULT_ROOT)
     cfg_path = root / "archforge.py"
+    pkg_dir = Path.cwd() / "archforge_optimizer"
 
-    # 1. archforge.py — refuse-clobber unless --force.
+    # 1. archforge_optimizer/ — the generic LangGraph adapter skeleton, scaffolded at
+    # the project root (cwd) so `--adapter archforge_optimizer.host:AppAdapter` resolves
+    # (main() puts cwd on sys.path). The user EDITS their MAS details (the # EDIT:
+    # markers in app.py) instead of coding the wiring from scratch. Per-file clobber
+    # guard mirroring suite.json: never overwrite an existing file unless --force, so a
+    # half-edited scaffold still gets its missing files filled. Runs FIRST (independent
+    # of .archforge/) so a re-run can repair a deleted adapter without --force.
+    for relpath, content in adapter_package_files().items():
+        fpath = pkg_dir / relpath
+        if fpath.exists() and not args.force:
+            print(f"kept:    archforge_optimizer/{relpath}  (already present)")
+            continue
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        fpath.write_text(content, encoding="utf-8")
+        print(f"created: archforge_optimizer/{relpath}")
+
+    # 2. archforge.py — refuse-clobber unless --force. (rc=2 if exists, not --force.)
+    # Runs AFTER the adapter scaffold so a re-run that only needs to repair
+    # archforge_optimizer/ still gets it even when archforge.py is already present.
     if cfg_path.exists() and not args.force:
         print(f"! {cfg_path} already exists. Re-run with --force to overwrite "
               "(your edits would be lost).", file=sys.stderr)
@@ -802,14 +881,6 @@ def _cmd_init(args: argparse.Namespace) -> int:
     root.mkdir(parents=True, exist_ok=True)        # .archforge/ (also the run state dir)
     cfg_path.write_text(archforge_config_text(), encoding="utf-8")
     print(f"created: {cfg_path}  (edit a value to change a default; the file is ACTIVE as-is)")
-
-    # 2. .env.example — create once at the repo root (cwd), never overwrite.
-    env_example = Path(".env.example")
-    if env_example.exists():
-        print(f"kept:    {env_example}  (already present)")
-    else:
-        env_example.write_text(env_example_text(), encoding="utf-8")
-        print(f"created: {env_example}")
 
     # 3. suite.json — seed the eval-task sidecar next to archforge.py (so --root
     # relocations also move the seeded suite); never overwrite — the user may have
@@ -820,8 +891,116 @@ def _cmd_init(args: argparse.Namespace) -> int:
     else:
         suite_path.write_text(_DEFAULT_SUITE_JSON, encoding="utf-8")
         print(f"created: {suite_path}  (edit the tasks to change what you optimize against)")
-    print(f"\nNext: edit {cfg_path}, then run `{PROG} evolve --seed <spec.json>`.")
+
+    spec_path = pkg_dir / "spec.json"
+    print(f"\nNext: put your provider API key in a root `.env` (gitignored), edit the "
+          f"# EDIT: markers in {pkg_dir / 'app.py'} (your MAS's node roster/edges/knobs), "
+          f"run `{PROG} make-spec` to build + lint `archforge_optimizer/spec.json` from "
+          f"your edited adapter, then `{PROG} evolve --adapter "
+          f"archforge_optimizer.host:AppAdapter --seed {spec_path}`.")
     return 0
+
+
+def _cmd_make_spec(args: argparse.Namespace) -> int:
+    """Build + lint + write the bootstrap Spec JSON from the EDITED adapter.
+
+    Unlike `init` (which scaffolds a placeholder), this reads the user's actual MAS
+    details: it imports ``--adapter``, lets its app build the bootstrap Spec, runs the
+    Spec Linter on the result, and — only if it passes — writes it to ``--out``
+    (default ``archforge_optimizer/spec.json``). So the spec.json that ``evolve --seed``
+    consumes is the user's real roster, not a template. A failing lint returns rc=1
+    WITHOUT writing (the user fixes the # EDIT: markers and re-runs). cwd is on
+    sys.path (``main()`` puts it there before dispatch), so
+    ``--adapter archforge_optimizer.host:AppAdapter`` resolves.
+
+    The app's ``build_spec()`` itself asserts-not-lint (it surfaces a malformed roster
+    loudly); for ``make-spec`` we want a clean rc=1 + the lint faults, not a raw
+    traceback. So a construction-time ``AssertionError`` is caught and its embedded
+    fault list is re-printed as the lint output."""
+    try:
+        _flush_adapter_cache(args.adapter)          # always read the current cwd's files
+        host = _import_adapter(args.adapter)
+    except AssertionError as exc:
+        print(f"! {args.adapter}: built Spec fails the linter — not writing {args.out}:",
+              file=sys.stderr)
+        for fault in _parse_build_spec_assert(str(exc)):
+            print(f"  {fault}", file=sys.stderr)
+        print("  edit the # EDIT: markers in your adapter app.py and re-run `make-spec`.",
+              file=sys.stderr)
+        return 1
+    # `app_spec()` is the adapter's published bootstrap Spec (LangGraphHostAdapter
+    # builds + caches it in __init__). It is not on the bare HostMAS protocol, so we
+    # surface a clear error for an adapter that lacks it rather than AttributeError.
+    build_spec = getattr(host, "app_spec", None)
+    if build_spec is None:
+        print(f"! {args.adapter} ({type(host).__name__}) exposes no app_spec() — "
+              f"make-spec needs a LangGraph-style adapter that builds a bootstrap Spec. "
+              f"Pass the host class (e.g. archforge_optimizer.host:AppAdapter).",
+              file=sys.stderr)
+        return 1
+    spec = build_spec()
+    faults = lint(spec)
+    if faults:
+        print(f"! {args.adapter}: built Spec fails the linter — not writing {args.out}:",
+              file=sys.stderr)
+        for f in faults:
+            loc = f" [{f.location}]" if f.location else ""
+            print(f"  {f.code}{loc}: {f.message}", file=sys.stderr)
+        print("  edit the # EDIT: markers in your adapter app.py and re-run `make-spec`.",
+              file=sys.stderr)
+        return 1
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(spec.model_dump_json(indent=2), encoding="utf-8")
+    print(f"created: {out_path}  (lint OK; run `{PROG} evolve --adapter "
+          f"{args.adapter} --seed {out_path}`)")
+    return 0
+
+
+def _parse_build_spec_assert(message: str) -> list[str]:
+    """Extract the per-fault strings from a ``build_spec()`` AssertionError message
+    (``LangGraph app Spec failed lint: ["code@loc: msg", ...]``). Falls back to the raw
+    tail of the message if the embedded list repr can't be parsed — never raises, so
+    ``make-spec``'s error path stays crash-free on a malformed assert."""
+    import ast
+    marker = "failed lint:"
+    idx = message.find(marker)
+    if idx < 0:
+        return [message.strip()]
+    tail = message[idx + len(marker):].strip()
+    try:
+        parsed = ast.literal_eval(tail)
+        if isinstance(parsed, (list, tuple)) and all(isinstance(x, str) for x in parsed):
+            return list(parsed)
+    except (ValueError, SyntaxError):
+        pass
+    return [tail]
+
+
+def _flush_adapter_cache(dotted: str) -> None:
+    """Drop a ``module:Class`` adapter's module subtree from ``sys.modules`` so the NEXT
+    import reads the *current cwd's* files, not a module cached from an earlier cwd.
+
+    Single-process reuse (the real CLI runs one command per process, so this is a no-op
+    there) defeats ``make-spec``/``evolve`` when the user edits ``app.py`` and re-runs
+    in the SAME process (e.g. the test harness, or a long-lived embedding): the stale
+    ``archforge_optimizer`` — bound to a previous tmp cwd's files — would shadow the
+    edit. Flushing + ``importlib.invalidate_caches()`` makes \"build from the edited
+    adapter\" honest. Scoped to the adapter's own top-level package so core imports are
+    untouched."""
+    if ":" in dotted:
+        modpath = dotted.split(":", 1)[0]
+    else:
+        modpath = dotted
+    top = modpath.split(".", 1)[0]
+    stale = [name for name in list(sys.modules) if name == top or name.startswith(top + ".")]
+    for name in stale:
+        sys.modules.pop(name, None)
+    importlib.invalidate_caches()
+
+
+
+
 
 
 # --------------------------------------------------------------------------- #
@@ -869,6 +1048,8 @@ def main(argv: list[str] | None = None, *,
         return _cmd_reject(args)
     if args.command == "init":
         return _cmd_init(args)
+    if args.command == "make-spec":
+        return _cmd_make_spec(args)
     if args.command == "evolve":
         return _cmd_evolve(args, components=components, loop=False)
     if args.command == "evolve-loop":

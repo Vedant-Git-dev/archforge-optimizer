@@ -98,7 +98,7 @@ with tempfile.TemporaryDirectory() as d:
 ```
 
 ```
-archforge-optimizer init       # once — scaffolds the project config the Engine reads
+archforge-optimizer init       # once — scaffolds project config + the archforge_optimizer/ adapter package
 python evolve_demo.py
 action=AUTO_PROMOTE  margin=+0.15
 incumbent_mean=0.55  candidate_mean=0.70
@@ -173,31 +173,42 @@ pip install archforge-optimizer
 # Optional: install the provider SDK(s) you actually run (none required to import)
 pip install "archforge-optimizer[providers-groq,providers-gemini]"
 
-# 2. Scaffold per-project config — writes .archforge/archforge.py (tunables),
-#    .archforge/suite.json (the eval tasks), .env.example (key template)
+# 2. Scaffold per-project config + the adapter package — writes:
+#      .archforge/archforge.py        (tunables — ACTIVE sane defaults)
+#      .archforge/suite.json          (the eval tasks you optimize against)
+#      archforge_optimizer/           (a generic LangGraph adapter skeleton — 5 files)
+#        __init__.py  host.py  app.py  sidecar.py  test_smoke_offline.py
 archforge-optimizer init
 
-# 3. Put your API keys in .env (gitignored)  ── e.g. GROQ_API_KEY=..., GEMINI_API_KEY=...
+# 3. Put your provider API key in a root `.env` (gitignored)  ── e.g. GEMINI_API_KEY=...
+#    (init never writes or touches .env — it just tells you to put the key there.)
 
-# 4. Lint a Spec before running it — checks DAG validity, node refs, type rules
-archforge-optimizer lint path/to/spec.json
+# 4. Edit your MAS details into archforge_optimizer/app.py — fill every `# EDIT:` marker
+#    (the node roster, edges, knobs, summarize/apply_llm_config hooks). Then build the
+#    bootstrap Spec from your EDITED adapter: it lints the roster first and writes
+#    archforge_optimizer/spec.json only if valid (rc=1 + the faults if not — fix + rerun).
+archforge-optimizer make-spec     # → archforge_optimizer/spec.json (lint OK)
 
-# 5. Run one Propose-Evaluate-Commit cycle against your MAS, wired by an adapter
+# 5. Run one Propose-Evaluate-Commit cycle against your MAS, wired by the adapter
 archforge-optimizer evolve \
-    --adapter your_pkg.your_host:YourAdapter \
-    --seed your_spec.json
+    --adapter archforge_optimizer.host:MyAdapter \
+    --seed archforge_optimizer/spec.json
 
 # 6. Run the full loop: repeat evolve until K consecutive non-promotions (plateau)
 #    or a cycle/budget cap is hit
 archforge-optimizer evolve-loop \
-    --adapter your_pkg.your_host:YourAdapter \
-    --seed your_spec.json --max-cycles 50
+    --adapter archforge_optimizer.host:MyAdapter \
+    --seed archforge_optimizer/spec.json --max-cycles 50
 
 # 7. Inspect
 archforge-optimizer status     # print the active incumbent Spec id, lineage, counts
 archforge-optimizer report     # print per-attempt score deltas (incumbent vs candidate)
 archforge-optimizer approve --all   # move PENDING_HUMAN structural wins into active
 ```
+
+> `init` never writes `.env.example` or `spec.json` — the provider key lives in your root
+> `.env` (gitignored), and `spec.json` comes from `make-spec` (your real roster, linted),
+> not a template. Lint any Spec by hand with `archforge-optimizer lint path/to/spec.json`.
 
 > You can also invoke as `python -m archforge ...` — identical surface.
 >
@@ -252,10 +263,12 @@ Your adapter builds a runnable pipeline from `spec` (the active incumbent's node
 
 A **generic LangGraph adapter** ships in `archforge/host/adapters/langgraph.py` and drives a real `graph.stream(...)` — "describe, don't introspect" (it reads node *names*, the stable surface; it never climbs your graph's internals). It is the easiest path for any LangGraph-based MAS. For other frameworks (CrewAI, AutoGen, raw call loops), subclass `BaseHostAdapter` (`archforge/host/adapters/base.py`) — the kit is factored so adapting *any* MAS is cheap, not bespoke-per-framework.
 
-Run it via the dotted-path seam:
+**`init` scaffolds the adapter for you.** You don't code the wiring from scratch: `archforge-optimizer init` writes a generic, name-neutral `archforge_optimizer/` package (the LangGraph adapter skeleton above) into your project root. Edit the `# EDIT:` markers in `archforge_optimizer/app.py` to describe your MAS — the node roster (`_NODES`), edges (`_EDGES`), knob→state map, and the `summarize`/`apply_llm_config`/`reset_llm_config` hooks — then `archforge-optimizer make-spec` builds + lints `archforge_optimizer/spec.json` from it and `--adapter archforge_optimizer.host:MyAdapter` points `evolve` at it. (The scaffold is generated at `init` time from string constants in the package; the sdist/wheel still ship only `archforge/` — it is not package data.) Per-file clobber guards mean re-running `init` never overwrites your edits unless `--force`, and a missing/half-edited adapter is repaired even when `archforge.py` already exists.
+
+Run it via the dotted-path seam — the scaffolded package uses the same `module:Class` form:
 
 ```bash
-archforge-optimizer evolve-loop --adapter your_pkg.your_host:YourAdapter --seed your_spec.json
+archforge-optimizer evolve-loop --adapter archforge_optimizer.host:MyAdapter --seed archforge_optimizer/spec.json
 ```
 
 ---
@@ -265,7 +278,8 @@ archforge-optimizer evolve-loop --adapter your_pkg.your_host:YourAdapter --seed 
 ```
 archforge-optimizer <command> [flags]
 
-  init          scaffold .archforge/archforge.py + .env.example + suite.json for this project
+  init          scaffold .archforge/archforge.py + suite.json + the archforge_optimizer/ adapter package
+  make-spec     build + lint archforge_optimizer/spec.json from the EDITED adapter (writes only if it passes)
   lint <path>   run the Spec Linter on a JSON Spec file
   evolve        run one Propose-Evaluate-Commit cycle from the active incumbent
   evolve-loop   repeat evolve until the budget cap or a plateau
@@ -347,7 +361,7 @@ archforge/
   diff.py             spec_diff / format_diff (human-readable mutation deltas)
   runlog.py           per-cycle run log (cards)
   models.py          Spec/Node/Edge/Step/Trace/RunScore/Attempt/Change/...
-  config.py .py / userconfig.py / config_init.py   versioning + tunable resolver + `init`
+  config.py / userconfig.py / config_init.py   versioning + tunable resolver + `init`
 ```
 
 ---
@@ -370,8 +384,6 @@ The public model surface (`archforge.models`) is the stable contract: `Spec`, `N
 - `pydantic >= 2.7`, `python-dotenv >= 1.0` (only hard deps — ArchForge imports cleanly with nothing else)
 - Provider SDKs (optional, install only what you run): `anthropic`, `openai`, `groq`, `google-genai`
 - For rich tracing (optional): `opentelemetry-sdk` + the per-SDK instrumentors you call
-
-> **Installing from source (development).** For an editable install, `pip install -e .` from a clone of this repository. A flat `pip install .` makes a *non-editable* copy in site-packages, so any later source edit won't take effect at the CLI — if a repo edit ever seems to no-op, check `python -c "import archforge; print(archforge.__file__)"` resolves to the repo, not site-packages.
 
 ---
 
@@ -396,4 +408,6 @@ ArchForge is released under the **MIT License** — see [`LICENSE`](LICENSE) for
 
 ---
 
+<p align="center">
 *ArchForge never patches live state — it swaps which versioned pipeline the host uses.*
+</p>
