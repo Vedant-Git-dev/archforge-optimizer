@@ -167,7 +167,7 @@ zero-billing smoke test (``test_smoke_offline.py``).
 
 Point ArchForge at it with::
 
-    archforge-optimizer evolve --adapter archforge_optimizer.host:MyAdapter --seed archforge_optimizer/spec.json
+    archforge-optimizer evolve --adapter archforge_optimizer.host:AppAdapter --seed archforge_optimizer/spec.json
 
 ``app.py`` describes your MAS's static agent DAG as a ``LangGraphApp``;
 ``host.py`` binds it to the generic adapter that drives the real
@@ -176,20 +176,20 @@ edges, knobs, hooks) to match your MAS -- the placeholder below builds a valid
 Spec, so ``--seed`` bootstraps before you fill in the real graph.
 """
 ''',
-    "host.py": '''"""Host adapter -- instantiates the generic ``LangGraphHostAdapter`` for your MAS.
+    "host.py": '''"""Binds the generic ``LangGraphHostAdapter`` to your MAS's ``App`` description.
 
-Zero-arg adapter (so the CLI's ``--adapter archforge_optimizer.host:MyAdapter``
+Zero-arg class (so the CLI's ``--adapter archforge_optimizer.host:AppAdapter``
 imports + instantiates it). The generic adapter owns the run loop; this just binds
-it to the ``MyApp`` description and exposes the bootstrap incumbent Spec.
+it to the ``App`` description and exposes the bootstrap incumbent Spec.
 """
 from __future__ import annotations
 
 from archforge.host.adapters import LangGraphHostAdapter
 
-from .app import MyApp
+from .app import App
 
 
-class MyAdapter(LangGraphHostAdapter):
+class AppAdapter(LangGraphHostAdapter):
     """A ``HostMAS`` driving your MAS's real LangGraph via the generic adapter.
 
     ``app_spec()`` is the bootstrap incumbent -- seed it into a ``SpecStore``
@@ -199,14 +199,10 @@ class MyAdapter(LangGraphHostAdapter):
     """
 
     def __init__(self) -> None:
-        super().__init__(MyApp())
+        super().__init__(App())
 
 
-# Alias mirroring the kit's HostMAS naming + the public surface.
-MyHostMAS = MyAdapter
-
-
-__all__ = ["MyAdapter", "MyHostMAS"]
+__all__ = ["AppAdapter"]
 ''',
     "app.py": '''"""Your MAS as a ``LangGraphApp`` -- the generic adapter's per-MAS description.
 
@@ -306,7 +302,7 @@ _RUNTIME_LOOPS: list[tuple[str, str]] = [
 NODE_IDS = tuple(_GID)                                   # build-order names, once a real graph exists
 
 
-class MyApp(LangGraphApp):
+class App(LangGraphApp):
     """Your MAS's static description for the ArchForge generic LangGraph adapter."""
 
     graph_factory = staticmethod(build_graph)           # EDIT: your real build_graph (raises until wired)
@@ -375,13 +371,13 @@ def write_spec_json(path: str | os.PathLike[str] | None = None) -> Path:
     effect. ``make-spec`` is the supported path: it builds the Spec via the adapter's
     ``app_spec()``, lints it, and writes ``archforge_optimizer/spec.json`` only if valid.
     """
-    spec = MyApp().build_spec()
+    spec = App().build_spec()
     out = Path(path) if path else Path(__file__).resolve().parent / "spec.json"
     out.write_text(spec.model_dump_json(indent=2), encoding="utf-8")
     return out
 
 
-__all__ = ["MyApp", "write_spec_json", "NODE_IDS"]
+__all__ = ["App", "write_spec_json", "NODE_IDS"]
 ''',
     "sidecar.py": '''"""Tier-2 deploy consumer -- overlays a promoted Spec's knobs onto your MAS.
 
@@ -524,7 +520,7 @@ __all__ = [
 ''',
     "test_smoke_offline.py": '''"""Offline (zero-billing) smoke test for the adapter scaffold.
 
-Builds ``MyApp()``, calls ``build_spec()``, and asserts the placeholder Spec lints +
+Builds ``App()``, calls ``build_spec()``, and asserts the placeholder Spec lints +
 has the placeholder nodes -- proving the scaffold is one command from a real run,
 with NO LLM/API keys and NO real graph required. The full routing-knob suite the
 reference adapter ships (a span-emitting offline suite) needs a real ``build_graph``;
@@ -550,20 +546,20 @@ _PARENT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
-from archforge_optimizer.app import MyApp, NODE_IDS   # noqa: E402
+from archforge_optimizer.app import App, NODE_IDS   # noqa: E402
 
 
 def test_placeholder_spec_lints() -> None:
     """The placeholder roster + edges form a valid Spec (the load-bearing guarantee):
     `init` produces something one command from `evolve --seed`."""
-    spec = MyApp().build_spec()
+    spec = App().build_spec()
     assert not lint(spec)
     assert {n.node_id for n in spec.nodes} == set(NODE_IDS)
 
 
 def test_placeholder_spec_has_required_nodes() -> None:
     """The placeholder ships a 2-node DAG (retrieve -> answer) the user edits."""
-    spec = MyApp().build_spec()
+    spec = App().build_spec()
     assert {n.node_id for n in spec.nodes} == {"retrieve", "answer"}
     kinds = {n.node_id: n.kind for n in spec.nodes}
     assert kinds["retrieve"] is m.NodeKind.RETRIEVER

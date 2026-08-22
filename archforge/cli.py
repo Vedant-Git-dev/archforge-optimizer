@@ -244,9 +244,9 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="build + lint archforge_optimizer/spec.json from the edited adapter app")
     _add_store_args(mk)
     mk.add_argument("--adapter", metavar="DOTTED.PATH[:Class]",
-                    default="archforge_optimizer.host:MyAdapter",
+                    default="archforge_optimizer.host:AppAdapter",
                     help="adapter module:Class whose app.build_spec() builds the Spec "
-                         "(default: archforge_optimizer.host:MyAdapter)")
+                         "(default: archforge_optimizer.host:AppAdapter)")
     mk.add_argument("--out", metavar="PATH", default="archforge_optimizer/spec.json",
                     help="where to write the Spec JSON (default: archforge_optimizer/spec.json)")
 
@@ -532,6 +532,23 @@ def _install_resource_warning_quieteners() -> None:
 _install_resource_warning_quieteners()
 
 
+# The scaffolded adapter package (`archforge-optimizer init`) + its make-spec output.
+# `evolve` defaults to these when present (no `--adapter`/`--seed` flag needed); the
+# flags stay for custom adapters / arbitrary seed paths.
+_SCAFFOLD_ADAPTER = "archforge_optimizer.host:AppAdapter"
+_SCAFFOLD_SPEC = "archforge_optimizer/spec.json"
+
+
+def _scaffolded_adapter_available() -> bool:
+    """True when `init` wrote the adapter package at cwd (its host.py exists)."""
+    return (Path.cwd() / "archforge_optimizer" / "host.py").is_file()
+
+
+def _scaffolded_spec_available() -> bool:
+    """True when `make-spec` produced archforge_optimizer/spec.json at cwd."""
+    return (Path.cwd() / "archforge_optimizer" / "spec.json").is_file()
+
+
 def _cmd_evolve(args: argparse.Namespace, *, components: Components | None,
                 loop: bool) -> int:
     # Injected `components` (the test/embedding path) always win — they ARE the
@@ -540,6 +557,7 @@ def _cmd_evolve(args: argparse.Namespace, *, components: Components | None,
     # works" contract): a project with no .archforge/archforge.py gets the init hint
     # and rc 1 instead of a bogus run. No-op under the pytest gate (tests use the
     # in-memory sane template).
+    components_injected = components is not None
     if components is None:
         try:
             ucfg.ensure_initialized()
@@ -557,6 +575,11 @@ def _cmd_evolve(args: argparse.Namespace, *, components: Components | None,
 
     specs, atts, traces = _stores(args.root)
 
+    # Default `--seed` to the scaffolded spec.json when the user scaffolded +
+    # ran `make-spec` (no flag needed); the flag still overrides for custom seeds.
+    if getattr(args, "seed", None) is None and _scaffolded_spec_available():
+        args.seed = _SCAFFOLD_SPEC
+
     # zero-LLM bootstrap of the root incumbent from --seed (if none active)
     active = _ensure_incumbent(args, specs)
     if active is None:
@@ -569,7 +592,15 @@ def _cmd_evolve(args: argparse.Namespace, *, components: Components | None,
     # --adapter: swap the runtime host for an external MAS adapter (a HostMAS /
     # BaseHostAdapter) while keeping the --provider organs (Architect/Judge).
     # This is the "adapt any MAS" seam: point at an adapter class, no core edit.
+    # When the user scaffolded the adapter package (`init`), DEFAULT --adapter to
+    # its AppAdapter (no flag needed); the flag still overrides for custom adapters.
+    # Skipped on the scripted fake path (FakeHostMAS is the zero-cost host) and
+    # when `components` were injected (test/embedding path owns the host).
     adapter_path = getattr(args, "adapter", None)
+    if (adapter_path is None and not components_injected
+            and _scaffolded_adapter_available()
+            and (args.provider or ucfg.get("PROVIDER")) != "scripted"):
+        adapter_path = _SCAFFOLD_ADAPTER
     if adapter_path:
         organs = Components(host=_import_adapter(adapter_path), judge=organs.judge,
                             architect=organs.architect, suite=organs.suite)
@@ -825,7 +856,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
     pkg_dir = Path.cwd() / "archforge_optimizer"
 
     # 1. archforge_optimizer/ — the generic LangGraph adapter skeleton, scaffolded at
-    # the project root (cwd) so `--adapter archforge_optimizer.host:MyAdapter` resolves
+    # the project root (cwd) so `--adapter archforge_optimizer.host:AppAdapter` resolves
     # (main() puts cwd on sys.path). The user EDITS their MAS details (the # EDIT:
     # markers in app.py) instead of coding the wiring from scratch. Per-file clobber
     # guard mirroring suite.json: never overwrite an existing file unless --force, so a
@@ -866,7 +897,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
           f"# EDIT: markers in {pkg_dir / 'app.py'} (your MAS's node roster/edges/knobs), "
           f"run `{PROG} make-spec` to build + lint `archforge_optimizer/spec.json` from "
           f"your edited adapter, then `{PROG} evolve --adapter "
-          f"archforge_optimizer.host:MyAdapter --seed {spec_path}`.")
+          f"archforge_optimizer.host:AppAdapter --seed {spec_path}`.")
     return 0
 
 
@@ -880,7 +911,7 @@ def _cmd_make_spec(args: argparse.Namespace) -> int:
     consumes is the user's real roster, not a template. A failing lint returns rc=1
     WITHOUT writing (the user fixes the # EDIT: markers and re-runs). cwd is on
     sys.path (``main()`` puts it there before dispatch), so
-    ``--adapter archforge_optimizer.host:MyAdapter`` resolves.
+    ``--adapter archforge_optimizer.host:AppAdapter`` resolves.
 
     The app's ``build_spec()`` itself asserts-not-lint (it surfaces a malformed roster
     loudly); for ``make-spec`` we want a clean rc=1 + the lint faults, not a raw
@@ -904,7 +935,7 @@ def _cmd_make_spec(args: argparse.Namespace) -> int:
     if build_spec is None:
         print(f"! {args.adapter} ({type(host).__name__}) exposes no app_spec() — "
               f"make-spec needs a LangGraph-style adapter that builds a bootstrap Spec. "
-              f"Pass the host class (e.g. archforge_optimizer.host:MyAdapter).",
+              f"Pass the host class (e.g. archforge_optimizer.host:AppAdapter).",
               file=sys.stderr)
         return 1
     spec = build_spec()
