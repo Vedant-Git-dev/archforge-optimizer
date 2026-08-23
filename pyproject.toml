@@ -9,6 +9,7 @@ requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.7",
     "python-dotenv>=1.0",
+    "litellm",
 ]
 
 # The installed console command — the package STILL imports as `archforge`
@@ -26,7 +27,7 @@ dev = [
     "mypy>=1.11",
 ]
 # Real LLM providers — install only the one(s) you run. None are required to
-# import or test the package; adapters import lazily and self-skip when absent.
+# import or test the package; LiteLLM shells out to these SDKs at call time.
 providers-anthropic = ["anthropic>=0.40"]
 providers-openai = ["openai>=1.40"]
 providers-groq = ["groq>=0.11"]
