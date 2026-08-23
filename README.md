@@ -10,20 +10,28 @@
 </p>
 
 > A self-improving meta-layer over multi-agent systems.
-> Point it at your graph, give it a rubric, and it evolves your pipeline — one proven change per cycle.
+> Point it at your graph, give it a rubric, and it evolves your pipeline, one proven change per cycle.
 
-**Minimal core dependencies · optional provider and tracing integrations** · install from PyPI with `pip install archforge-optimizer` · exercised end-to-end on a real LangGraph MAS (groq + google-genai + chroma, OpenTelemetry-traced).
+**Minimal core dependencies** · **optional provider and tracing integrations** · install from PyPI with `pip install archforge-optimizer` · exercised end-to-end on a real LangGraph MAS (groq + google-genai + chroma, OpenTelemetry-traced).
 
-ArchForge sits **on top** of an existing multi-agent system (MAS) and improves it run-over-run. Each cycle it inspects where the judge docked points, proposes **one** targeted change — rewriting an agent's prompt, tuning a knob, adding a verifier, re-wiring a node, swapping a model — and keeps it only if it measurably beats the incumbent on a held-out suite. The host MAS keeps running tasks as normal; ArchForge observes the runs and feeds back an improved pipeline.
+## What is ArchForge?
+
+ArchForge sits **on top** of an existing multi-agent system (MAS) and improves it over time. In plain terms:
+
+1. **Look.** It inspects where the judge docked points on the last run.
+2. **Propose.** It proposes **one** targeted change: rewriting an agent's prompt, tuning a knob, adding a verifier, rewiring a node, or swapping a model.
+3. **Keep or drop.** It keeps the change only if it measurably beats the current pipeline on a held-out suite.
+
+Your MAS keeps running tasks as normal. ArchForge watches those runs and feeds back an improved pipeline.
 
 The design is deliberately minimal and verifiable:
 
-- **One protected incumbent.** A candidate never touches production config; it's promoted only when its mean score beats the incumbent's by at least the margin τ.
-- **Immutable, versioned Specs are the single source of truth.** Evolving the pipeline = swapping which Spec the host instantiates, never patching live state.
-- **Hybrid autonomy.** Safe small edits (prompt/knob) auto-apply; structural edits (roster/graph/model) queue for human approval.
-- **Observation/control asymmetry.** The wrapper records traces and reports the active Spec, but never rewrites prompts mid-run. All mutation happens *between* runs, on the Spec.
+- **One protected incumbent.** A candidate never touches production config. It is promoted only when its mean score beats the incumbent's by at least the margin τ.
+- **Immutable, versioned Specs are the single source of truth.** Evolving the pipeline means swapping which Spec the host instantiates, never patching live state.
+- **Hybrid autonomy.** Safe small edits (prompt/knob) apply automatically. Structural edits (roster/graph/model) queue for human approval.
+- **Observation/control asymmetry.** The wrapper records traces and reports the active Spec, but never rewrites prompts mid-run. All mutation happens between runs, on the Spec.
 
-No ground truth is required — an LLM-as-judge scores each run against a rubric.
+No ground truth is required. An LLM-as-judge scores each run against a rubric.
 
 ### At a glance
 
@@ -35,16 +43,16 @@ No ground truth is required — an LLM-as-judge scores each run against a rubric
 | [**Judge**](archforge/judge/) | LLM-as-judge: scores each run per a versioned rubric, with a per-step breakdown for credit assignment |
 | [**Gatekeeper**](archforge/gatekeeper.py) | Decides promote / queue-for-human / discard / rollback by margin `τ` + scope |
 | [**Stores**](archforge/stores/) | `SpecStore` (versioned, content-addressed) + `TraceStore` + `AttemptStore` (all append-only) |
-| [**TracingMiddleware**](archforge/middleware.py) | The host seam — wraps every agent, records each `Step`, reports the active Spec |
+| [**TracingMiddleware**](archforge/middleware.py) | The host seam: wraps every agent, records each `Step`, reports the active Spec |
 
 ---
 
 ## A Simple Example
 
-One Propose-Evaluate-Commit cycle, **zero cost** — no LLM, no network, no API keys. It wires the scripted organs (a fake host, a scripted Architect that proposes one prompt edit, a scripted Judge that scores it a win) into the real `Engine`, and you watch an auto-promotion end-to-end. To run it for real on your own MAS, replace the scripted organs: pass `--adapter your_pkg.your_host:YourAdapter` and `--provider <llm>` to `archforge-optimizer evolve` (see [Quickstart](#quickstart)).
+One Propose-Evaluate-Commit cycle, **zero cost**: no LLM, no network, no API keys. It wires the scripted organs (a fake host, a scripted Architect that proposes one prompt edit, a scripted Judge that scores it a win) into the real `Engine`, and you watch an auto-promotion end-to-end. To run it for real on your own MAS, replace the scripted organs with `--adapter your_pkg.your_host:YourAdapter` and `--provider <llm>` on `archforge-optimizer evolve` (see [Quickstart](#quickstart)).
 
 ```python
-# save this as evolve_demo.py  —  run from an `init`-ed project dir
+# save this as evolve_demo.py, then run it from an init-ed project dir
 import tempfile
 from pathlib import Path
 
@@ -78,12 +86,12 @@ with tempfile.TemporaryDirectory() as d:
     specs, atts, ts = SpecStore(root_dir), AttemptStore(root_dir), TraceStore(root_dir)
     rid = specs.commit(seed, parent_spec_id=None, status=m.SpecStatus.INCUMBENT)
     specs.set_active(rid)
-    # the candidate's spec_id is content-hashed OVER its parent — mirror the
+    # the candidate's spec_id is content-hashed OVER its parent, so mirror the
     # engine's commit (parent = rid) when scripting the judge's score for it
     cand.parent_spec_id = rid
     judge = (ScriptedJudge(rubric=rubric)
              .set_aggregate(rid, "t1", 0.55)            # incumbent baseline
-             .set_aggregate(cand.compute_spec_id(), "t1", 0.70))  # +0.15 >= τ
+             .set_aggregate(cand.compute_spec_id(), "t1", 0.70))  # +0.15 >= tau
 
     engine = Engine(
         host=FakeHostMAS(), judge=judge, architect=ScriptedArchitect().propose(change, {"prompt": "p1"}),
@@ -98,14 +106,14 @@ with tempfile.TemporaryDirectory() as d:
 ```
 
 ```
-archforge-optimizer init       # once — scaffolds project config + the archforge_optimizer/ adapter package
+archforge-optimizer init       # once: scaffolds project config + the archforge_optimizer/ adapter package
 python evolve_demo.py
 action=AUTO_PROMOTE  margin=+0.15
 incumbent_mean=0.55  candidate_mean=0.70
 active_spec_id=57396a49  promoted=True
 ```
 
-The candidate's tighter prompt beat the incumbent by `+0.15 ≥ τ`, so the Gatekeeper **auto-promoted** it to the new active Spec — all within immutable, versioned storage. Nothing was patched in place; the host will now instantiate the new Spec on its next run.
+The candidate's tighter prompt beat the incumbent by `+0.15 ≥ τ`, so the Gatekeeper **auto-promoted** it to the new active Spec, all within immutable, versioned storage. Nothing was patched in place; the host will now instantiate the new Spec on its next run.
 
 ---
 
@@ -146,7 +154,7 @@ The candidate's tighter prompt beat the incumbent by `+0.15 ≥ τ`, so the Gate
   │     small + win  → auto-promote │ structural + win → human gate │
   │     lose         → discard      │ regress → rollback (lineage)  │
   │       ▼                                                         │
-  │  SpecStore (versioned, immutable) — "active incumbent" pointer  │
+  │  SpecStore (versioned, immutable) - "active incumbent" pointer  │
   └─────────────────────────────┬──────────────────────────────────┘
                                  └── next host runs use the new incumbent Spec
 ```
@@ -155,7 +163,7 @@ Four organs, one loop:
 
 | Organ | Role |
 |---|---|
-| **Architect** | Reads the last trace + judge scores + history, credit-assigns the rubric loss to a node/route, proposes **one** change. Forgets nothing — skips mutations already tried-and-rejected. |
+| **Architect** | Reads the last trace + judge scores + history, credit-assigns the rubric loss to a node/route, proposes **one** change. Forgets nothing: it skips mutations already tried and rejected. |
 | **SuiteRunner** | Runs each candidate against the held-out suite `R` times (repeats absorb judge noise). The only component that invokes the host MAS. |
 | **Judge** | LLM-as-judge: scores each run per a versioned rubric (`grounding`, `correctness`, `completeness`, …), with a per-step breakdown for credit assignment. |
 | **Gatekeeper** | Decides by margin `τ` + scope: auto-promote small wins, queue structural wins for a human, discard regressions, rollback if a later measurement regresses. |
@@ -164,37 +172,39 @@ Four organs, one loop:
 
 ## Quickstart
 
-ArchForge imports with **zero LLM** installed — adapters are import-lazy and self-skip when a provider SDK is absent. A real run needs one provider SDK.
+ArchForge imports with **zero LLM** installed. The one provider client (LiteLLM) is import-lazy, and a real run needs LiteLLM (a core dep) plus the provider SDK(s) you actually run.
 
 ```bash
-# 1. Install from PyPI
+# 1. Install from PyPI (LiteLLM ships as a core dependency; the provider SDKs it
+#    shells out to are optional extras)
 pip install archforge-optimizer
 
 # Optional: install the provider SDK(s) you actually run (none required to import)
 pip install "archforge-optimizer[providers-groq,providers-gemini]"
 
-# 2. Scaffold per-project config + the adapter package — writes:
-#      .archforge/archforge.py        (tunables — ACTIVE sane defaults)
+# 2. Scaffold per-project config + the adapter package. This writes:
+#      .archforge/archforge.py        (tunables, with sane defaults active)
 #      .archforge/suite.json          (the eval tasks you optimize against)
-#      archforge_optimizer/           (a generic LangGraph adapter skeleton — 5 files)
+#      archforge_optimizer/           (a generic LangGraph adapter skeleton, 5 files)
 #        __init__.py  host.py  app.py  sidecar.py  test_smoke_offline.py
 archforge-optimizer init
 
-# 3. Put your provider API key in a root `.env` (gitignored)  ── e.g. GEMINI_API_KEY=...
-#    (init never writes or touches .env — it just tells you to put the key there.)
+# 3. Put your provider API key in a root `.env` (gitignored), e.g. GEMINI_API_KEY=...
+#    (init never writes or touches .env; it just tells you to put the key there.)
 
-# 4. Edit your MAS details into archforge_optimizer/app.py — fill every `# EDIT:` marker
-#    (the node roster, edges, knobs, summarize/apply_llm_config hooks). Then build the
-#    bootstrap Spec from your EDITED adapter: it lints the roster first and writes
-#    archforge_optimizer/spec.json only if valid (rc=1 + the faults if not — fix + rerun).
-archforge-optimizer make-spec     # → archforge_optimizer/spec.json (lint OK)
+# 4. Edit your MAS details into archforge_optimizer/app.py. Fill every `# EDIT:`
+#    marker (the node roster, edges, knobs, summarize/apply_llm_config hooks). Then
+#    build the bootstrap Spec from your EDITED adapter: it lints the roster first and
+#    writes archforge_optimizer/spec.json only if valid (rc=1 + the faults if not,
+#    so fix and rerun).
+archforge-optimizer make-spec     # -> archforge_optimizer/spec.json (lint OK)
 
 # 5. Run one Propose-Evaluate-Commit cycle against your MAS. evolve auto-defaults
 #    --adapter archforge_optimizer.host:AppAdapter and --seed archforge_optimizer/spec.json
 archforge-optimizer evolve
 
-# 6. Run the full loop: repeat evolve until K consecutive non-promotions (plateau)
-# or set flags in archforge.py
+# 6. Run the full loop: repeat evolve until K consecutive non-promotions (plateau),
+#    or set flags in archforge.py
 archforge-optimizer evolve-loop --max-cycles 50
 
 # 7. Inspect
@@ -203,15 +213,7 @@ archforge-optimizer report     # print per-attempt score deltas (incumbent vs ca
 archforge-optimizer approve --all   # move PENDING_HUMAN structural wins into active
 ```
 
-> `init` never writes `.env.example` or `spec.json` — the provider key lives in your root
-> `.env` (gitignored), and `spec.json` comes from `make-spec` (your real roster, linted),
-> not a template. Lint any Spec by hand with `archforge-optimizer lint path/to/spec.json`.
-
-> You can also invoke as `python -m archforge ...` — identical surface.
->
-> **From source (development).** Clone the repo and `pip install -e .` for an editable install.
-
-The `--provider` flag selects the LLM backing the Architect + Judge (`anthropic` / `openai` / `groq` / `gemini` for real runs). The host MAS is wired via `--adapter my_pkg.my_host:MyAdapter` — and after `init`, `evolve` already defaults it to the `archforge_optimizer.host:AppAdapter`, so you only pass the flag for a custom adapter.
+The `--provider` flag selects the LLM backing the Architect + Judge (`anthropic` / `openai` / `groq` / `gemini` for real runs). Every real provider goes through **one LiteLLM client**: the provider just prefixes the model id (`openai/gpt-4o`, `gemini/gemini-3.6-flash`, …). The host MAS is wired via `--adapter my_pkg.my_host:MyAdapter`. After `init`, `evolve` already defaults it to `archforge_optimizer.host:AppAdapter`, so you only pass the flag for a custom adapter.
 
 ---
 
@@ -231,25 +233,25 @@ One cycle, end-to-end:
 
 ### The action space
 
-`ChangeKind` ∈ `prompt_edit | knob | add_node | remove_node | rewire | model_swap`. Scope is mechanical: `small` (prompt/knob) auto-promotes; `structural` (roster/graph/model) requires a human. A Spec Linter validates every candidate *before* it reaches the SuiteRunner — orphans, dangling refs, self-loops, type rules.
+`ChangeKind` ∈ `prompt_edit | knob | add_node | remove_node | rewire | model_swap`. Scope is mechanical: `small` (prompt/knob) auto-promotes; `structural` (roster/graph/model) requires a human. A Spec Linter validates every candidate *before* it reaches the SuiteRunner (orphans, dangling refs, self-loops, type rules).
 
 ### Governing invariants
 
-- **I1** — `SpecStore.active()` is the only Spec any host run can instantiate.
-- **I2** — no committed Spec ever changes after `commit`.
-- **I3** — every non-root Spec has a reachable `parent_spec_id` chain; rollback preserves it.
-- **I4** — every structural win goes to `queue_for_human`; auto-promote never bypasses.
-- **I5** — no `Attempt.suite_result` ever compares scores across a different `rubric_id` or task set.
+- **I1:** `SpecStore.active()` is the only Spec any host run can instantiate.
+- **I2:** no committed Spec ever changes after `commit`.
+- **I3:** every non-root Spec has a reachable `parent_spec_id` chain; rollback preserves it.
+- **I4:** every structural win goes to `queue_for_human`; auto-promote never bypasses.
+- **I5:** no `Attempt.suite_result` ever compares scores across a different `rubric_id` or task set.
 
 ### Error handling, by design
 
-Every failure that touches the lineage **fails closed** — the incumbent is untouched, the candidate discarded or held, traces retained. Noise is absorbed by `R` repeats + margin `τ` + regression floor `δ ≥ τ` (so a noisy measurement never yo-yos the pointer). Host/agent errors mid-run are caught per-task (`Trace.ok=false`, partial trace retained); a candidate that fails > ε of tasks is auto-rejected *before* margin math.
+Every failure that touches the lineage **fails closed**: the incumbent is untouched, the candidate discarded or held, traces retained. Noise is absorbed by `R` repeats + margin `τ` + regression floor `δ ≥ τ` (so a noisy measurement never yo-yos the pointer). Host/agent errors mid-run are caught per-task (`Trace.ok=false`, partial trace retained); a candidate that fails > ε of tasks is auto-rejected *before* margin math.
 
 ---
 
 ## Adapters: connecting your MAS
 
-ArchForge couples to a host through one protocol — `HostMAS`:
+ArchForge couples to a host through one protocol, `HostMAS`:
 
 ```python
 class HostMAS(Protocol):
@@ -258,11 +260,11 @@ class HostMAS(Protocol):
 
 Your adapter builds a runnable pipeline from `spec` (the active incumbent's nodes/edges/prompts/knobs) and threads `TracingMiddleware` through it so every step is recorded. Everything below the seam is your pipeline; everything above it is the Forge.
 
-A **generic LangGraph adapter** ships in `archforge/host/adapters/langgraph.py` and drives a real `graph.stream(...)` — "describe, don't introspect" (it reads node *names*, the stable surface; it never climbs your graph's internals). It is the easiest path for any LangGraph-based MAS. For other frameworks (CrewAI, AutoGen, raw call loops), subclass `BaseHostAdapter` (`archforge/host/adapters/base.py`) — the kit is factored so adapting *any* MAS is cheap, not bespoke-per-framework.
+A **generic LangGraph adapter** ships in `archforge/host/adapters/langgraph.py` and drives a real `graph.stream(...)`: it "describes, doesn't introspect" (it reads node *names*, the stable surface; it never climbs your graph's internals). It is the easiest path for any LangGraph-based MAS. For other frameworks (CrewAI, AutoGen, raw call loops), subclass `BaseHostAdapter` (`archforge/host/adapters/base.py`). The kit is factored so adapting *any* MAS is cheap, not bespoke-per-framework.
 
-**`init` scaffolds the adapter for you.** You don't code the wiring from scratch: `archforge-optimizer init` writes a generic, name-neutral `archforge_optimizer/` package (the LangGraph adapter skeleton above) into your project root. Edit the `# EDIT:` markers in `archforge_optimizer/app.py` to describe your MAS — the node roster (`_NODES`), edges (`_EDGES`), knob to state map, and the `summarize`/`apply_llm_config`/`reset_llm_config` hooks — then `archforge-optimizer make-spec` builds + lints `archforge_optimizer/spec.json` from it. Once scaffolded, `evolve` auto-defaults to the scaffold: `--adapter archforge_optimizer.host:AppAdapter` and `--seed archforge_optimizer/spec.json` (only pass the flags for a custom adapter/seed). Per-file clobber guards mean re-running `init` never overwrites your edits unless `--force`, and a missing/half-edited adapter is repaired even when `archforge.py` already exists.
+**`init` scaffolds the adapter for you.** You don't code the wiring from scratch. `archforge-optimizer init` writes a generic, name-neutral `archforge_optimizer/` package (the LangGraph adapter skeleton above) into your project root. Edit the `# EDIT:` markers in `archforge_optimizer/app.py` to describe your MAS (the node roster `_NODES`, edges `_EDGES`, knob to state map, and the `summarize` / `apply_llm_config` / `reset_llm_config` hooks). Then `archforge-optimizer make-spec` builds and lints `archforge_optimizer/spec.json` from it. Once scaffolded, `evolve` auto-defaults to the scaffold: `--adapter archforge_optimizer.host:AppAdapter` and `--seed archforge_optimizer/spec.json` (pass the flags only for a custom adapter/seed). Per-file clobber guards mean re-running `init` never overwrites your edits unless `--force`, and a missing/half-edited adapter is repaired even when `archforge.py` already exists.
 
-Run it via the dotted-path seam — the scaffolded package uses the same `module:Class` form:
+Run it via the dotted-path seam (the scaffolded package uses the same `module:Class` form):
 
 ```bash
 archforge-optimizer evolve-loop  # defaults: --adapter archforge_optimizer.host:AppAdapter --seed archforge_optimizer/spec.json
@@ -312,29 +314,29 @@ archforge-optimizer <command> [flags]
 
 ## Configuration
 
-Per-project config lives in **`.archforge/archforge.py`** — a plain Python file, **active as-is** (no registration step), so `archforge-optimizer init` produces a working project directory immediately. Edit a value to change a default. `init` scaffolds it with sane defaults: `PROVIDER="gemini"`, `DEFAULT_TAU=0.05`, `DEFAULT_DELTA=0.07`, `DEFAULT_REPEATS=1`, `DEFAULT_MAX_CYCLES=20`, `DEFAULT_PLATEAU_CYCLES=5`, plus the budget caps, the architect model roster, and `DEFAULT_TRACE_TOTAL_BUDGET_TOK=None` (the tracing toggle — see below).
+Per-project config lives in **`.archforge/archforge.py`**, a plain Python file that is **active as-is** (no registration step), so `archforge-optimizer init` produces a working project directory immediately. Edit a value to change a default. `init` scaffolds it with sane defaults: `PROVIDER="gemini"`, `DEFAULT_TAU=0.05`, `DEFAULT_DELTA=0.07`, `DEFAULT_REPEATS=1`, `DEFAULT_MAX_CYCLES=20`, `DEFAULT_PLATEAU_CYCLES=5`, plus the budget caps, the architect model roster, and `DEFAULT_TRACE_TOTAL_BUDGET_TOK=None` (the tracing toggle, see below).
 
-API keys live in **`.env`** (gitignored — your own keys, never logged or committed). `evolve` loads them from `.env` for `--provider != scripted`; the environment always wins, and `--api-key` wins above both.
+API keys live in **`.env`**. `evolve` loads them for `--provider != scripted`; the environment always preferred
 
-The evaluation suite is **`.archforge/suite.json`** — the representative tasks the Judge scores. Optimization targets the *suite*, never a single repeated task (the primary defense against overfitting structural mutations).
+The evaluation suite is **`.archforge/suite.json`**, the representative tasks the Judge scores. Optimization targets the *suite*, never a single repeated task (the primary defense against overfitting structural mutations).
 
 ---
 
 ## Observability (OpenTelemetry GenAI tracing)
 
-By default, each `Step` the Judge reads carries a host-authored one-liner summary (e.g. `answer_len=1189`) — lossy on the **host-streaming path**. ArchForge can instead auto-instrument your SDK calls as **OpenTelemetry GenAI spans** and project a **bounded slice** of the real prompt/completion into each `Step` — so the Judge compares real content against the task, not length stubs.
+By default, each `Step` the Judge reads carries a host-authored one-liner summary (e.g. `answer_len=1189`), lossy on the **host-streaming path**. ArchForge can instead auto-instrument your SDK calls as **OpenTelemetry GenAI spans** and project a **bounded slice** of the real prompt/completion into each `Step`, so the Judge compares real content against the task, not length stubs.
 
-- **Cooperative attribution.** A forge-owned `wrapped(name, fn)` opens an `archforge.node` parent span; auto-instrumented LLM/retriever spans nest as children by parent-link (not temporal order) — robust to retries, multi-call, and fan-out.
+- **Cooperative attribution.** A forge-owned `wrapped(name, fn)` opens an `archforge.node` parent span; auto-instrumented LLM/retriever spans nest as children by parent-link (not temporal order), robust to retries, multi-call, and fan-out.
 - **Bounded.** Per-kind caps keep the total judge-prompt token budget bounded; a post-loop shed trims the largest remaining steps while **protecting the final-answer step**.
 - **Gated, not forked.** `DEFAULT_TRACE_TOTAL_BUDGET_TOK = None` reproduces the lossy `summarize()` path **byte-identically**, so turning rich tracing off yields exactly the same `Step` records the Judge would read without OTel installed. Set a number to turn on rich steps. Toggle, not fork.
-- **Zero-dep by default.** `archforge.otel` is import-lazy — `import archforge` and `import archforge.otel` pull **zero** OpenTelemetry. Per-SDK instrumentors (`opentelemetry-instrumentation-<sdk>`) are the MAS owner's install.
-- **Secrets stay in-process.** The in-memory span buffer has no exporter — nothing leaves the process. Never wire an OTLP exporter without a redaction processor.
+- **Zero-dep by default.** `archforge.otel` is import-lazy: `import archforge` and `import archforge.otel` pull **zero** OpenTelemetry. Per-SDK instrumentors (`opentelemetry-instrumentation-<sdk>`) are the MAS owner's install.
+- **Secrets stay in-process.** The in-memory span buffer has no exporter, so nothing leaves the process. Never wire an OTLP exporter without a redaction processor.
 
 ---
 
 ## Deployment: shipping optimizations to production
 
-When a candidate auto-promotes, ArchForge can emit a **deploy envelope** — a self-contained JSON with the promoted Spec, the knobs to overlay, the scores, and the decision (margin + rule). Your MAS reads it at startup and applies the knobs without the Forge on the hot path. Opt-in via the engine's `on_deploy` hook (the CLI wires it to write `.archforge/optimized.json`); `on_cycle` is the richer per-cycle surface (specs, runs, change) for custom rendering/telemetry.
+When a candidate auto-promotes, ArchForge can emit a **deploy envelope**: a self-contained JSON with the promoted Spec, the knobs to overlay, the scores, and the decision (margin + rule). Your MAS reads it at startup and applies the knobs without the Forge on the hot path. Opt in via the engine's `on_deploy` hook (the CLI wires it to write `.archforge/optimized.json`); `on_cycle` is the richer per-cycle surface (specs, runs, change) for custom rendering/telemetry.
 
 ---
 
@@ -342,16 +344,16 @@ When a candidate auto-promotes, ArchForge can emit a **deploy envelope** — a s
 
 ```
 archforge/
-  cli.py            the Forge — argparse entrypoint + per-command wiring
+  cli.py            the Forge: argparse entrypoint + per-command wiring
   engine.py         the P-E-C orchestrator + loop (E3/E8 budget/plateau)
   architect.py       proposes one change per cycle (credit assignment, dedup)
-  suite.py           SuiteRunner — runs the eval suite R repeats
+  suite.py           SuiteRunner: runs the eval suite R repeats
   judge/             LLM-as-judge (base.py + scripted.py)
   gatekeeper.py       decides promote / queue / discard / rollback
   stores/            SpecStore (versioned) + TraceStore + AttemptStore (append-only)
-  middleware.py       TracingMiddleware — the host seam
+  middleware.py       TracingMiddleware: the host seam
   host/              HostMAS protocol + adapter kit (base.py, langgraph.py, ...)
-  llm/               provider clients (anthropic/openai/groq/gemini, lazy + self-skip)
+  llm/               one LiteLLM client for every real provider (import-lazy; provider = model prefix)
   otel.py            OpenTelemetry GenAI tracing (import-lazy, bounded projection)
   lint.py            Spec Linter (validate-DAG, refs, type rules)
   mutate.py          apply a Change to a Spec
@@ -366,10 +368,10 @@ archforge/
 ## Extending ArchForge
 
 - **A new MAS.** Subclass `BaseHostAdapter` (or use the LangGraph adapter if you're on LangGraph), implement `instantiate(spec, middleware) -> Runnable`, and pass it via `--adapter`.
-- **A new provider.** Add a client under `archforge/llm/` (subclass `LLMClient`); register it in the CLI's `_PROVIDERS`.
+- **A new provider.** Add a provider→prefix entry to `_PROVIDER_PREFIX` in `archforge/llm/litellm.py` and a model default in `.archforge/archforge.py`'s `DEFAULT_ARCHITECT_MODELS`. LiteLLM routes the prefixed model id for you. No new adapter.
 - **A new mutation kind.** Add it to `ChangeKind` + `scope_for_kind`, implement it in `mutate.apply_change`, and teach the Architect to propose it.
-- **A richer rubric.** Write a `suite.json` + rubric; the Judge scores each run against it. Comparisons are only valid within `(rubric_id, suite_id)` — bumping either starts a fresh baseline (I5).
-- **Custom cycle/deploy surfaces.** Pass callbacks into the `Engine` constructor: `on_cycle(result, ctx)` fires every cycle (the CLI uses it to print the per-cycle card; `ctx` carries the parent + candidate Specs, both `SuiteRun`s, and the proposed `Change`), and `on_deploy(spec, dctx)` fires only on `AUTO_PROMOTE` (the CLI uses it to write the `optimized.json` deploy envelope; `dctx` carries the parent Spec, the `Decision` with margin + rule, both runs' scores, and the cycle index).
+- **A richer rubric.** Write a `suite.json` + rubric; the Judge scores each run against it. Comparisons are only valid within `(rubric_id, suite_id)`: bumping either starts a fresh baseline (I5).
+- **Custom cycle/deploy surfaces.** Pass callbacks into the `Engine` constructor. `on_cycle(result, ctx)` fires every cycle (the CLI uses it to print the per-cycle card; `ctx` carries the parent + candidate Specs, both `SuiteRun`s, and the proposed `Change`). `on_deploy(spec, dctx)` fires only on `AUTO_PROMOTE` (the CLI uses it to write the `optimized.json` deploy envelope; `dctx` carries the parent Spec, the `Decision` with margin + rule, both runs' scores, and the cycle index).
 
 The public model surface (`archforge.models`) is the stable contract: `Spec`, `Node`, `Edge`, `Knobs`, `Step`, `Trace`, `RunScore`, `Attempt`, `Change`, `Thresholds`, and the `ChangeKind`/`Scope`/`Verdict`/`SpecStatus` enums. `archforge.host.base` defines `Task`, `AgentResponse`, `Agent`, `Runnable`, `HostMAS`.
 
@@ -378,8 +380,8 @@ The public model surface (`archforge.models`) is the stable contract: `Spec`, `N
 ## Requirements
 
 - Python ≥ 3.11 (developed on 3.14)
-- `pydantic >= 2.7`, `python-dotenv >= 1.0` (only hard deps — ArchForge imports cleanly with nothing else)
-- Provider SDKs (optional, install only what you run): `anthropic`, `openai`, `groq`, `google-genai`
+- `pydantic >= 2.7`, `python-dotenv >= 1.0`, `litellm` (hard deps: LiteLLM is import-lazy, so ArchForge still imports cleanly with nothing else; it is only needed at a real provider call)
+- Provider SDKs (optional, install only what you run; LiteLLM shells out to them): `anthropic`, `openai`, `groq`, `google-genai`
 - For rich tracing (optional): `opentelemetry-sdk` + the per-SDK instrumentors you call
 
 ---
@@ -389,22 +391,22 @@ The public model surface (`archforge.models`) is the stable contract: `Spec`, `N
 ArchForge is exercised end-to-end on a real LangGraph MAS (groq + google-genai + chroma, OpenTelemetry-traced). Active directions:
 
 - **Delegation specs** (replace hand-rolled subsystems with vetted libraries):
-  - ✅ #1 — Tracing → OpenTelemetry GenAI (lands bounded real prompt/completion slices into the Judge's per-step `Step` records)
-  - 🚧 #2 — LLM clients → LiteLLM (unify the per-provider clients behind one library)
-  - 🚧 #3 — Judge → DeepEval / Ragas (rubric scoring via a mature eval framework)
+  - ✅ #1: Tracing → OpenTelemetry GenAI (lands bounded real prompt/completion slices into the Judge's per-step `Step` records)
+  - ✅ #2: LLM clients → LiteLLM (one client, provider = model prefix; #1)
+  - 🚧 #3: Judge → DeepEval / Ragas (rubric scoring via a mature eval framework)
 - **Adapter kit.** Generalize so adapting *any* MAS is cheap (LangGraph done; CrewAI/AutoGen/raw-loops next).
 - **Hierarchical search (v2).** A Strategist layer that emits scoped optimization goals, layered over the P-E-C loop once the cheap one-change loop is reliable.
 
-No part of the roadmap requires breaking the model surface — additions are additive and gated behind tunables.
+No part of the roadmap requires breaking the model surface: additions are additive and gated behind tunables.
 
 ---
 
 ## License
 
-ArchForge is released under the **MIT License** — see [`LICENSE`](LICENSE) for the full text. © 2026 Vedant Pardeshi.
+ArchForge is released under the **MIT License** (see [`LICENSE`](LICENSE) for the full text). © 2026 Vedant Pardeshi.
 
 ---
 
 <p align="center">
-*ArchForge never patches live state — it swaps which versioned pipeline the host uses.*
+*ArchForge never patches live state. It swaps which versioned pipeline the host uses.*
 </p>
