@@ -29,7 +29,7 @@ from pathlib import Path
 # =========================================================================== #
 # The package version. Read by hatchling for the built distribution and
 # re-exported as `archforge.__version__` (archforge/__init__.py). One place.
-VERSION: str = "0.3.0"
+VERSION: str = "0.4.0"
 
 
 # =========================================================================== #
