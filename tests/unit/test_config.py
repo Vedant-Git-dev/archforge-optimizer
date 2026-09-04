@@ -161,7 +161,7 @@ def test_template_execs_to_every_editable_name():
     exec(compile(TEMPLATE, "<template>", "exec"), ns)   # noqa: S102
     assert set(EDITABLE_NAMES) <= set(ns)
     assert ns["DEFAULT_TAU"] == 0.05
-    assert len(EDITABLE_NAMES) == 21
+    assert len(EDITABLE_NAMES) == 23
 
 
 def test_editable_names_match_locked_set():
@@ -175,6 +175,7 @@ def test_editable_names_match_locked_set():
         "DEFAULT_MAX_TOKENS_TOTAL", "DEFAULT_MAX_TOKENS_PER_CYCLE",
         "DEFAULT_MAX_WALL_MS_PER_CYCLE",
         "DEFAULT_TRACE_TOTAL_BUDGET_TOK",
+        "DEFAULT_EVALUATOR", "DEFAULT_DEEPEVAL_METRICS",
     }
 
 

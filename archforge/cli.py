@@ -67,9 +67,14 @@ from archforge import userconfig as ucfg
 from archforge.config import (
     ALL_PROVIDERS as _PROVIDERS,
     DEFAULT_SUITE_ID, DEFAULT_TASK_ID, DEFAULT_TASK_INPUT,
+    EVALUATORS as _EVALUATORS,
     PROG, load_env,
 )
 from archforge.userconfig import ConfigNotInitialized
+
+# The DeepEval metrics the `--deepeval-metric` flag accepts (its `choices`). Kept in
+# sync with the factory registry in archforge/judge/deepeval.py.
+_DEEPEVAL_METRICS = ("answer_relevancy", "faithfulness")
 
 # Fixed run-state / config-discovery dir (a system path, independent of the
 # tunable DEFAULT_ROOT_DIR which the embedder API reads via archforge.userconfig).
@@ -105,12 +110,42 @@ def _import_adapter(dotted: str) -> HostMAS:
     its own ``__init__`` carries whatever its MAS needs (Lumina loads its base
     prompts; a framework adapter wraps its graph). No PR into core to adapt a
     new MAS: ``--adapter mypkg:MyAdapter`` wires it; ``--provider`` keeps the
-    Architect/Judge organs, ``--seed`` the bootstrap Spec."""
+    Architect/Judge organs, ``--seed`` the bootstrap Spec.
+
+    Surfaces clear, actionable errors for the common failure modes users hit when
+    editing the scaffold's ``app.py``:
+
+      * ``ImportError``/``ModuleNotFoundError`` — a MAS dependency listed in
+        ``app.py``'s imports is not installed (e.g. ``from mymas.graph import
+        build_graph`` when ``mymas`` isn't on ``sys.path``).
+      * ``KeyError`` — ``node_ids(build_graph())`` can't find a node name that
+        ``_GID[...]`` references (a rename in ``build_graph`` that wasn't
+        reflected in ``_GID``).
+    """
     if ":" in dotted:
         modpath, cls = dotted.split(":", 1)
     else:
         modpath, cls = dotted, ""
-    module = importlib.import_module(modpath)
+    try:
+        module = importlib.import_module(modpath)
+    except ModuleNotFoundError as exc:
+        # Surface the missing package name explicitly so the user knows what to
+        # install, and point at `app.py` as the likely source of the bad import.
+        missing = exc.name or str(exc)
+        raise SystemExit(
+            f"! --adapter: cannot import {modpath!r} — missing module {missing!r}.\n"
+            f"  Check the imports at the top of archforge_optimizer/app.py: make sure\n"
+            f"  every package your MAS needs (e.g. `langgraph`, your MAS package) is\n"
+            f"  installed in the current Python environment.\n"
+            f"  Original error: {exc}"
+        ) from exc
+    except ImportError as exc:
+        raise SystemExit(
+            f"! --adapter: failed to import {modpath!r}.\n"
+            f"  Check the imports at the top of archforge_optimizer/app.py and make\n"
+            f"  sure all your MAS dependencies are installed.\n"
+            f"  Original error: {exc}"
+        ) from exc
     if not cls:
         # Bare module: expect it to expose a ``HostMAS``-protocol attr named
         # ``HostMAS`` or the last path segment; else error loudly.
@@ -123,7 +158,33 @@ def _import_adapter(dotted: str) -> HostMAS:
             f"Pass it as `module:ClassName`."
         ) from exc
     if isinstance(obj, type):
-        return obj()                 # a HostMAS/BaseHostAdapter subclass → instance
+        try:
+            return obj()             # a HostMAS/BaseHostAdapter subclass → instance
+        except KeyError as exc:
+            # Usually `_GID = node_ids(build_graph())` in app.py referencing a
+            # node name the graph doesn't define — but a KeyError can come from
+            # ANY dict/env lookup in the adapter's __init__, so name the likely
+            # cause without asserting it.
+            app_py = Path.cwd() / "archforge_optimizer" / "app.py"
+            raise SystemExit(
+                f"! --adapter: {dotted!r} raised KeyError {exc} at startup.\n"
+                f"  Most common cause: the `_GID` dict in {app_py} references a\n"
+                f"  node name that `build_graph()` never defines (check the\n"
+                f"  `add_node(..., name=...)` calls in your graph builder). If\n"
+                f"  `_GID` matches, look for another dict/env lookup in the\n"
+                f"  adapter's __init__ (e.g. os.environ[...])."
+            ) from exc
+        except AssertionError:
+            # Re-raise so `make-spec`'s own handler (which formats build_spec()
+            # lint failures as clean rc=1 output) can catch it.
+            raise
+        except Exception as exc:        # noqa: BLE001
+            app_py = Path.cwd() / "archforge_optimizer" / "app.py"
+            raise SystemExit(
+                f"! --adapter: failed to instantiate {dotted!r}.\n"
+                f"  Check {app_py} — the adapter raised an unexpected error at\n"
+                f"  startup: {type(exc).__name__}: {exc}"
+            ) from exc
     if isinstance(obj, HostMAS):
         return obj                   # already an instance
     raise SystemExit(f"--adapter: {dotted!r} resolved to a {type(obj).__name__}, "
@@ -163,6 +224,14 @@ def _add_evolve_args(p: argparse.ArgumentParser, *, loop: bool) -> None:
                    help="model id for the Architect (else the provider default)")
     p.add_argument("--judge-model", default=None,
                    help="model id for the Judge (else the provider default)")
+    p.add_argument("--evaluator", choices=_EVALUATORS, default=None,
+                   help="evaluation backend (default from archforge.py): native is the "
+                        "built-in LLM-as-judge; deepeval is the external DeepEval backend "
+                        "(needs the [deepeval] extra)")
+    p.add_argument("--deepeval-metric", choices=_DEEPEVAL_METRICS, action="append",
+                   default=None, dest="deepeval_metrics",
+                   help="DeepEval metric to score with (repeatable; else the "
+                        "DEFAULT_DEEPEVAL_METRICS tunable)")
     p.add_argument("--suite", metavar="PATH", default=None,
                    help="path to a suite.json (overrides the DEFAULT_SUITE_FILE tunable; "
                         "the file's tasks define what you optimize against)")
@@ -331,8 +400,34 @@ def _default_components(args: argparse.Namespace) -> Components:
     arch_models = ucfg.get("DEFAULT_ARCHITECT_MODELS")
     judge_models = ucfg.get("DEFAULT_JUDGE_MODELS")
     arch = Architect(llm, model=args.architect_model or arch_models[provider])
-    judge = Judge(llm, model=args.judge_model or judge_models[provider],
-                  rubric=default_rubric())
+
+    # Evaluation backend seam (issue #2): `native` keeps the built-in Judge over
+    # the provider's LLM; `deepeval` swaps in the external DeepEval backend, which
+    # scores independently of the Architect's LLM (it carries its own model/keys).
+    # `default=` on both: a config written by an OLDER init (before issue #2)
+    # lacks these names and would KeyError otherwise — the defaults keep the
+    # pre-existing native behavior for those projects.
+    evaluator = getattr(args, "evaluator", None) or ucfg.get(
+        "DEFAULT_EVALUATOR", default="native")
+    if evaluator == "deepeval":
+        from archforge.judge import make_evaluator
+
+        try:
+            metrics = getattr(args, "deepeval_metrics", None) or ucfg.get(
+                "DEFAULT_DEEPEVAL_METRICS", default=["answer_relevancy"])
+            # DeepEval scores through LiteLLM too: reuse the Judge model seam
+            # (--judge-model / DEFAULT_JUDGE_MODELS) and prefix it with the
+            # provider so LiteLLM routes to the same vendor (never DeepEval's
+            # OpenAI default).
+            from archforge.llm.litellm import prefix_model
+            de_model = prefix_model(provider, args.judge_model or judge_models[provider])
+            judge = make_evaluator("deepeval", model=de_model, metrics=metrics)
+        except LLMError as exc:
+            print(f"[evaluator] {exc}", file=sys.stderr)
+            raise
+    else:
+        judge = Judge(llm, model=args.judge_model or judge_models[provider],
+                      rubric=default_rubric())
     return Components(host=FakeHostMAS(), judge=judge, architect=arch, suite=suite)
 
 
@@ -549,6 +644,31 @@ def _scaffolded_spec_available() -> bool:
     return (Path.cwd() / "archforge_optimizer" / "spec.json").is_file()
 
 
+# Unique token written by `init` into the placeholder `build_graph` — present ONLY
+# when the user hasn't replaced it yet (spec E-guard: refuse to evolve template code).
+_TEMPLATE_MARKER = "EDIT app.py: import your MAS"
+
+
+def _scaffolded_adapter_is_template() -> bool:
+    """True when the scaffolded `app.py` still contains the unedited placeholder
+    `build_graph` (the ``NotImplementedError`` with the "EDIT app.py" marker).
+
+    This is the signal that the user ran `init` but hasn't wired their real MAS yet.
+    Returning True causes `evolve`/`evolve-loop` to refuse with a clear message
+    instead of silently running the Judge against the fake placeholder spec.
+    Only the scaffolded adapter path is checked — an explicit ``--adapter`` flag
+    skips this (the user owns that adapter).
+    """
+    app_py = Path.cwd() / "archforge_optimizer" / "app.py"
+    if not app_py.is_file():
+        return False
+    try:
+        text = app_py.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return _TEMPLATE_MARKER in text
+
+
 def _cmd_evolve(args: argparse.Namespace, *, components: Components | None,
                 loop: bool) -> int:
     # Injected `components` (the test/embedding path) always win — they ARE the
@@ -597,6 +717,26 @@ def _cmd_evolve(args: argparse.Namespace, *, components: Components | None,
     # Skipped on the scripted fake path (FakeHostMAS is the zero-cost host) and
     # when `components` were injected (test/embedding path owns the host).
     adapter_path = getattr(args, "adapter", None)
+    # Guard: refuse to run against the unedited scaffold template. When the user
+    # ran `init` but hasn't replaced `build_graph` in `app.py` yet, the placeholder
+    # Spec is valid (it lints) but the MAS is a stub — running `evolve` would silently
+    # score fake outputs through the Judge with no real pipeline. Only checked when
+    # the scaffold is auto-detected (no explicit --adapter flag) so user-supplied
+    # adapters are never blocked. The scripted path is also exempt: it keeps
+    # FakeHostMAS and never touches the scaffold, so a template app.py is inert
+    # there (and blocking it would break the zero-cost demo in a scaffolded dir).
+    if (adapter_path is None and not components_injected
+            and (args.provider or ucfg.get("PROVIDER")) != "scripted"
+            and _scaffolded_adapter_available()
+            and _scaffolded_adapter_is_template()):
+        print(
+            f"! archforge_optimizer/app.py still contains the placeholder `build_graph` "
+            f"(the scaffold written by `{PROG} init` has not been edited yet).\n"
+            f"  Edit the # EDIT: markers in archforge_optimizer/app.py to wire your real "
+            f"MAS, then re-run `{PROG} make-spec` to rebuild the Spec before evolving.",
+            file=sys.stderr,
+        )
+        return 1
     if (adapter_path is None and not components_injected
             and _scaffolded_adapter_available()
             and (args.provider or ucfg.get("PROVIDER")) != "scripted"):

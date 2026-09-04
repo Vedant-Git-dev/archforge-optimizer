@@ -39,8 +39,7 @@ _DISCOVERY_DIR: Path = Path(".archforge")
 _DISCOVERY_FILE: Path = _DISCOVERY_DIR / "archforge.py"
 
 _MAIN_MSG = (
-    "ArchForge is not initialized. Run `archforge-optimizer init` to create "
-    ".archforge/archforge.py (the project's tunable config), then the CLI will work."
+    "ArchForge is not initialized. Run `archforge-optimizer init`."
 )
 
 

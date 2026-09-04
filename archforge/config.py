@@ -47,6 +47,20 @@ ALL_PROVIDERS: tuple[str, ...] = (SCRIPTED_PROVIDER,) + REAL_PROVIDERS
 
 
 # =========================================================================== #
+# Evaluation backends — the ROSTER only (NOT the default choice; that's a tunable)
+# =========================================================================== #
+# The evaluators the CLI's `--evaluator` flag ACCEPTS (its `choices`). `native` is
+# the built-in LLM-as-judge (`Judge` over an `LLMClient`); `deepeval` is the
+# external DeepEval backend (`DeepEvalEvaluator`, an optional extra). WHICH is the
+# default is a tunable → it lives in .archforge/archforge.py (resolved by
+# archforge.userconfig), NOT here. `EVALUATORS` is re-exported from archforge.judge;
+# `make_evaluator(evaluator)` dispatches on these.
+NATIVE_EVALUATOR: str = "native"
+DEEPEVAL_EVALUATOR: str = "deepeval"
+EVALUATORS: tuple[str, ...] = (NATIVE_EVALUATOR, DEEPEVAL_EVALUATOR)
+
+
+# =========================================================================== #
 # Project environment (`.env`) — how secrets reach the provider SDKs
 # =========================================================================== #
 # A pip-installed `archforge` reads the project folder's `.env` so a checked-out
@@ -128,6 +142,8 @@ __all__ = [
     "VERSION",
     # llm provider roster
     "SCRIPTED_PROVIDER", "REAL_PROVIDERS", "ALL_PROVIDERS",
+    # evaluation backend roster
+    "NATIVE_EVALUATOR", "DEEPEVAL_EVALUATOR", "EVALUATORS",
     # project environment (.env loader for provider API keys)
     "load_env",
     # storage layout

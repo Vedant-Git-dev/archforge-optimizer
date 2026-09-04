@@ -3,6 +3,12 @@
 All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Pluggable evaluation backends (issue #2).** The Judge is now selectable behind the existing `JudgeProtocol` seam: a new `EVALUATORS` roster (`native` / `deepeval`), a `make_evaluator` factory (mirroring `make_client`), a `--evaluator` CLI flag (with `--deepeval-metric`, repeatable), and `DEFAULT_EVALUATOR` / `DEFAULT_DEEPEVAL_METRICS` tunables in `.archforge/archforge.py`. The native LLM-as-judge stays the default and is unchanged.
+- **DeepEval backend** (`archforge/judge/deepeval.py`, optional `deepeval` extra). `DeepEvalEvaluator` projects a trace into a DeepEval `LLMTestCase` and scores it with standalone metrics (`answer_relevancy`, `faithfulness`); metric scores map to `RunScore.rubric_scores` with the aggregate as their mean, comparable to the native judge's [0,1] aggregate. It is run-level (empty `step_scores`; credit assignment degrades gracefully), imports DeepEval lazily (a missing install surfaces as a clear `LLMError`, never an `ImportError` at package import), and converts DeepEval's own errors to `LLMError` so the SuiteRunner treats its failures exactly like a native judge failure (E9). The judge model is configurable: `--judge-model` / `DEFAULT_JUDGE_MODELS` are reused, prefixed with the provider (new public `archforge.llm.litellm.prefix_model` helper) and wrapped in DeepEval's `LiteLLMModel`, so scoring routes through LiteLLM to your provider instead of DeepEval's OpenAI default.
+
 ## [0.3.0] - 2026-08-23
 
 ### Changed

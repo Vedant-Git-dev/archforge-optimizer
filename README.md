@@ -215,7 +215,16 @@ archforge-optimizer approve --all   # move PENDING_HUMAN structural wins into ac
 
 The `--provider` flag selects the LLM backing the Architect + Judge (`anthropic` / `openai` / `groq` / `gemini` for real runs). Every real provider goes through **one LiteLLM client**: the provider just prefixes the model id (`openai/gpt-4o`, `gemini/gemini-3.6-flash`, …). The host MAS is wired via `--adapter my_pkg.my_host:MyAdapter`. After `init`, `evolve` already defaults it to `archforge_optimizer.host:AppAdapter`, so you only pass the flag for a custom adapter.
 
+### Evaluation backends
+
+The Judge is pluggable behind one `JudgeProtocol` seam (`score` / `score_suite`), so the optimizer never knows which evaluator produced a score. `--evaluator` picks the backend (default `DEFAULT_EVALUATOR="native"` in `.archforge/archforge.py`):
+
+- **`native`** (default): the built-in LLM-as-judge. One structured call to your `--provider` model scores every rubric dimension plus a per-step breakdown (used for credit assignment).
+- **`deepeval`**: the external [DeepEval](https://deepeval.com) backend (optional: `pip install "archforge-optimizer[deepeval]"`). Each run is projected into a DeepEval `LLMTestCase` and scored by standalone metrics (`--deepeval-metric answer_relevancy --deepeval-metric faithfulness`, or the `DEFAULT_DEEPEVAL_METRICS` tunable). Metric scores land in `RunScore.rubric_scores`; the aggregate is their mean, comparable to the native judge's [0,1] aggregate. DeepEval is run-level, not per-step, so `step_scores` is empty and credit assignment degrades gracefully (the Architect falls back to conservative, blame-free proposals). The judge model is configurable: it reuses the `--judge-model` / `DEFAULT_JUDGE_MODELS` seam, prefixed with your `--provider` (e.g. `gemini/gemini-3.6-flash`) and routed through LiteLLM, so it scores with the same vendor and env keys as the rest of the run, never DeepEval's OpenAI default.
+
 ---
+
+
 
 ## The optimization loop (P-E-C)
 
@@ -296,6 +305,8 @@ archforge-optimizer <command> [flags]
 | `--seed <path>` | bootstrap the root incumbent from a Spec JSON (first run); defaults to `archforge_optimizer/spec.json` when present |
 | `--adapter <dotted.path[:Class]>` | your `HostMAS` adapter; defaults to `archforge_optimizer.host:AppAdapter` when the scaffold is present (not on the `--provider scripted` fake path) |
 | `--provider {scripted\|anthropic\|openai\|groq\|gemini}` | LLM backing the Architect + Judge |
+| `--evaluator {native\|deepeval}` | evaluation backend (default: `DEFAULT_EVALUATOR`); `deepeval` needs the `[deepeval]` extra |
+| `--deepeval-metric {answer_relevancy\|faithfulness}` | DeepEval metric to score with (repeatable; default: `DEFAULT_DEEPEVAL_METRICS`) |
 | `--suite <path>` | evaluation suite JSON (default: `.archforge/suite.json`) |
 | `--tau <float>` | promotion margin τ |
 | `--delta <float>` | regression floor δ (≥ τ) |

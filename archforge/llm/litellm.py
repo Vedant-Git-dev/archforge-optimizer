@@ -48,6 +48,22 @@ _PROVIDER_PREFIX: dict[str, str] = {
 }
 
 
+def prefix_model(provider: str, model: str) -> str:
+    """Prefix a model id with the provider (``openai/gpt-4o``).
+
+    A model that ALREADY carries THIS provider's prefix (``openai/gpt-4o``
+    under provider=openai) is passed through untouched, so fully-qualified
+    overrides still work. But a ``/`` alone does NOT mean "already routed" —
+    e.g. Groq's model ``openai/gpt-oss-120b`` has a slash in its native id,
+    so it must still get the provider prefix (``groq/openai/gpt-oss-120b``)
+    or LiteLLM would route it to OpenAI. Prefix unless it already matches.
+    """
+    prefix = _PROVIDER_PREFIX.get(provider, provider)
+    if model.startswith(f"{prefix}/"):
+        return model
+    return f"{prefix}/{model}"
+
+
 class LiteLLMClient:
     """An `LLMClient` backed by `litellm.completion` for one provider.
 
@@ -65,19 +81,8 @@ class LiteLLMClient:
         self._base_url = base_url
 
     def _prefixed(self, model: str) -> str:
-        """Prefix a model id with the provider (``openai/gpt-4o``).
-
-        A model that ALREADY carries THIS provider's prefix (``openai/gpt-4o``
-        under provider=openai) is passed through untouched, so fully-qualified
-        overrides still work. But a ``/`` alone does NOT mean "already routed" —
-        e.g. Groq's model ``openai/gpt-oss-120b`` has a slash in its native id,
-        so it must still get the provider prefix (``groq/openai/gpt-oss-120b``)
-        or LiteLLM would route it to OpenAI. Prefix unless it already matches.
-        """
-        prefix = _PROVIDER_PREFIX[self._provider]
-        if model.startswith(f"{prefix}/"):
-            return model
-        return f"{prefix}/{model}"
+        """Prefix a model id with this client's provider (see `prefix_model`)."""
+        return prefix_model(self._provider, model)
 
     def _default_model(self) -> str:
         """The provider's default model id for a bare complete() call, resolved
@@ -138,4 +143,4 @@ class LiteLLMClient:
         )
 
 
-__all__ = ["LiteLLMClient"]
+__all__ = ["LiteLLMClient", "prefix_model"]
