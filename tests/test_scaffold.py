@@ -11,7 +11,7 @@ from archforge.cli import main
 
 
 def test_package_imports() -> None:
-    assert archforge.__version__ == "0.3.0"
+    assert archforge.__version__ == "0.4.0"
 
 
 def test_cli_no_arg_returns_zero() -> None:
