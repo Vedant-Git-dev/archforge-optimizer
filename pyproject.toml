@@ -39,6 +39,8 @@ providers = [
     "google-genai>=1.0",
 ]
 
+deepeval = ["deepeval"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

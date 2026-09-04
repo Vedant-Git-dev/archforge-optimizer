@@ -14,7 +14,43 @@ improvement (invariant I5, spec E2).
 
 from __future__ import annotations
 
-from archforge.judge.base import Judge, SuiteAggregate, default_rubric
-from archforge.judge.scripted import ScriptedJudge
+from typing import Sequence
 
-__all__ = ["Judge", "ScriptedJudge", "SuiteAggregate", "default_rubric"]
+from archforge.config import EVALUATORS
+from archforge.judge.base import (
+    Judge, JudgeProtocol, SuiteAggregate, default_rubric,
+)
+from archforge.judge.scripted import ScriptedJudge
+from archforge.llm.base import LLMError
+
+# `EVALUATORS` is re-exported (in __all__) straight from archforge.config — the
+# single source of truth the CLI also imports for its `--evaluator` choices.
+
+
+def make_evaluator(
+    evaluator: str, *, model: str | None = None, metrics: Sequence[str] | None = None
+) -> JudgeProtocol:
+    """Build an external evaluation backend by name.
+
+    Resolves `DeepEvalEvaluator` lazily (so importing DeepEval is deferred to here,
+    and the optional extra is only required at construction). Raises `LLMError` for
+    an unknown evaluator so the CLI surfaces one clear message across the backend
+    seam. The `native` evaluator is NOT built here: it is the built-in `Judge`,
+    constructed inline by the CLI from the provider's `LLMClient`.
+    """
+
+    if evaluator == "native":
+        raise LLMError(
+            "'native' is the built-in Judge; construct it with Judge(llm, model=...)"
+        )
+    if evaluator == "deepeval":
+        from archforge.judge.deepeval import DeepEvalEvaluator
+
+        return DeepEvalEvaluator(model=model, metrics=metrics)  # type: ignore[return-value]
+    raise LLMError(f"unknown evaluator {evaluator!r}; expected one of {EVALUATORS}")
+
+
+__all__ = [
+    "Judge", "JudgeProtocol", "ScriptedJudge", "SuiteAggregate", "default_rubric",
+    "make_evaluator", "EVALUATORS",
+]

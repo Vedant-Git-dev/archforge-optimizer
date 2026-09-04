@@ -57,6 +57,13 @@ _FIELDS: tuple[tuple[str, str, str], ...] = (
     # --- LLM provider
     ("PROVIDER", '"gemini"',
      "which LLM to use (scripted|anthropic|openai|groq|gemini); scripted needs no API key"),
+    # --- evaluation backend
+    ("DEFAULT_EVALUATOR", '"native"',
+     "which evaluator scores runs (native|deepeval); native = built-in LLM-as-judge, "
+     "deepeval = external DeepEval backend (needs the [deepeval] extra)"),
+    ("DEFAULT_DEEPEVAL_METRICS", '["answer_relevancy"]',
+     "DeepEval metrics to run per run (answer_relevancy|faithfulness); "
+     "each becomes a rubric_scores dimension and the aggregate is their mean"),
     ("DEFAULT_ARCHITECT_MODELS", _DEFAULT_ARCHITECT_MODELS,
      "default Architect (proposer) model per provider; a bare LLMClient call falls "
      "back here too — edit the dict to change it"),

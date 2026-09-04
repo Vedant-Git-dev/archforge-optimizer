@@ -485,3 +485,140 @@ def test_evolve_defaults_seed_to_scaffold_spec(tmp_path, capsys, monkeypatch) ->
     from archforge.stores.spec_store import SpecStore
     active_id = SpecStore(str(root)).active_id()
     assert active_id == scaffold.compute_spec_id()
+
+
+def test_evolve_refuses_scaffold_template_app(tmp_path, capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """evolve/evolve-loop must refuse with rc=1 when `app.py` still contains the
+    unedited placeholder `build_graph` (the ``# EDIT:`` scaffold written by `init`).
+    Running the Judge against a stub MAS is useless and confusing; the guard catches
+    it before any engine work starts and prints a clear actionable message."""
+    monkeypatch.chdir(tmp_path)
+    assert main(["init"]) == 0
+    assert main(["make-spec"]) == 0
+    capsys.readouterr()  # drain init/make-spec output
+
+    root = tmp_path / ".archforge"
+    # No injected components: the CLI's own auto-detection path fires, which is what
+    # the guard intercepts.  Provider defaults to "scripted" from the written archforge.py
+    # so no real LLM is attempted — the guard returns before the provider path.
+    rc = main(["evolve", "--root", str(root)])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "placeholder" in err or "EDIT" in err or "template" in err.lower()
+
+    # evolve-loop is the same guard
+    rc = main(["evolve-loop", "--root", str(root)])
+    assert rc == 1
+
+
+def test_evolve_passes_after_editing_scaffold_template(tmp_path, capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Once the user edits `app.py` and removes the placeholder `build_graph`, the
+    template guard no longer fires and evolve proceeds normally (injected components
+    bypass the host-swap path; the guard is the only thing checked here)."""
+    monkeypatch.chdir(tmp_path)
+    assert main(["init"]) == 0
+    assert main(["make-spec"]) == 0
+    capsys.readouterr()
+
+    # Simulate editing: replace the placeholder build_graph with a stub that doesn't
+    # contain the marker string — the guard reads app.py's text, not its runtime behaviour.
+    app_py = tmp_path / "archforge_optimizer" / "app.py"
+    original = app_py.read_text(encoding="utf-8")
+    edited = original.replace(
+        "EDIT app.py: import your MAS",
+        "import your MAS here",      # marker gone → guard passes
+    )
+    app_py.write_text(edited, encoding="utf-8")
+
+    from archforge.architect import ScriptedArchitect
+    from archforge.cli import Components
+    from archforge.host.base import Task
+    from archforge.host.fake import FakeHostMAS
+    from archforge.judge import ScriptedJudge
+    from archforge.suite import Suite
+
+    comp = Components(
+        host=FakeHostMAS(),
+        judge=ScriptedJudge(),
+        architect=ScriptedArchitect().force_plateau(),
+        suite=Suite(suite_id="S", rubric_id="default-v1",
+                    tasks=[Task(task_id="t1", input="q")]),
+    )
+    root = tmp_path / ".archforge"
+    rc = main(["evolve", "--root", str(root)], components=comp)
+    assert rc == 0
+
+
+# --------------------------------------------------------------------------- #
+# _import_adapter — clear errors for bad node imports / missing dependencies
+# --------------------------------------------------------------------------- #
+
+
+def test_import_adapter_missing_module_gives_clear_error(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """When the adapter's `app.py` tries to import a MAS package that isn't
+    installed (e.g. `from mymas.graph import build_graph`), `_import_adapter`
+    must raise ``SystemExit`` with a message that names the missing module and
+    tells the user to check `app.py`'s imports — not a raw traceback."""
+    import pytest
+    from archforge.cli import _import_adapter
+
+    monkeypatch.chdir(tmp_path)
+    # Write a minimal adapter package whose host module imports a non-existent package.
+    pkg = tmp_path / "bad_adapter"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "host.py").write_text(
+        "from nonexistent_mas_package.graph import build_graph\n"  # will fail at import
+        "class BadHost: pass\n",
+        encoding="utf-8",
+    )
+    import sys
+    sys.path.insert(0, str(tmp_path))
+    try:
+        with pytest.raises(SystemExit) as exc_info:
+            _import_adapter("bad_adapter.host:BadHost")
+        msg = str(exc_info.value)
+        assert "nonexistent_mas_package" in msg, f"Missing module name not in error: {msg!r}"
+        assert "app.py" in msg or "imports" in msg, f"No app.py hint in error: {msg!r}"
+    finally:
+        sys.path.remove(str(tmp_path))
+        # flush stale cached module so other tests don't see it
+        for key in list(sys.modules):
+            if key == "bad_adapter" or key.startswith("bad_adapter."):
+                sys.modules.pop(key, None)
+
+
+def test_import_adapter_node_id_mismatch_gives_clear_error(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """When the adapter's `App()` constructor raises ``KeyError`` because
+    ``node_ids(build_graph())`` references a node name that doesn't exist in the
+    graph, `_import_adapter` must raise ``SystemExit`` with a message that names
+    the missing node ID and points at `app.py` — not a raw ``KeyError``."""
+    import pytest
+    from archforge.cli import _import_adapter
+
+    monkeypatch.chdir(tmp_path)
+    pkg = tmp_path / "bad_nodes"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    # A host whose __init__ raises KeyError (simulating node_ids() mismatch)
+    (pkg / "host.py").write_text(
+        "class BadHost:\n"
+        "    def __init__(self):\n"
+        "        raise KeyError('missing_node_id')\n",
+        encoding="utf-8",
+    )
+    import sys
+    sys.path.insert(0, str(tmp_path))
+    try:
+        with pytest.raises(SystemExit) as exc_info:
+            _import_adapter("bad_nodes.host:BadHost")
+        msg = str(exc_info.value)
+        assert "missing_node_id" in msg, f"Node ID not in error: {msg!r}"
+        assert "app.py" in msg or "_GID" in msg or "node" in msg.lower(), \
+            f"No node hint in error: {msg!r}"
+    finally:
+        sys.path.remove(str(tmp_path))
+        for key in list(sys.modules):
+            if key == "bad_nodes" or key.startswith("bad_nodes."):
+                sys.modules.pop(key, None)
+
