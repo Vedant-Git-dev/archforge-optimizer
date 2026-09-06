@@ -279,6 +279,17 @@ Run it via the dotted-path seam (the scaffolded package uses the same `module:Cl
 archforge-optimizer evolve-loop  # defaults: --adapter archforge_optimizer.host:AppAdapter --seed archforge_optimizer/spec.json
 ```
 
+### Zero-touch integration (no edits to your MAS's source)
+
+Filling `archforge_optimizer/app.py` is the whole integration: your MAS's own files stay untouched.
+
+* **Named LLM knobs** (`model` / `temperature` / `max_tokens` / `system_prompt`): the default `apply_llm_config` records each node's vote, and the adapter patches the LLM SDKs (`groq`, `openai`, `google.genai`) at the boundary for the run (`archforge/host/adapters/inject.py`). Each outbound call is attributed to its node by the call stack (the node-id map comes from the compiled graph's node callables) and rewritten per the vote. Your MAS needs no call-time config registry of its own. Override `apply_llm_config` only if you prefer an explicit seam; doing so disables the injector for your app.
+* **Settings-backed knobs** (things your nodes read from a config singleton, not from state): declare `settings_getter` and `knob_to_settings` on your `App` and the adapter mutates those fields in place for the run, restoring them after. No node edits.
+* **Prompt capture**: with `base_prompts` left empty, the injector records the first system prompt it observes per node, so a later `prompt_edit` still has a real base to diff against.
+* **Real token usage**: the injector reads the metered usage off each SDK response, and each step's token cost is the provider's number (drained per node occurrence, so loops account correctly). The `len//4` estimate remains the fallback for explicit-seam apps, responses without usage, and non-LLM nodes.
+
+Limits: only the sync SDK entry points are patched (async hosts keep the explicit seam), and attribution assumes one module per node (the usual LangGraph layout; several nodes defined in one module share an attribution, so keep node functions in their own modules or pass `node_modules` overrides).
+
 ---
 
 ## CLI reference

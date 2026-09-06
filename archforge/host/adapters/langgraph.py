@@ -27,8 +27,8 @@ Knob routing (the adapter's one design rule — "describe, don't introspect"):
     live = inject into ``initial_state``; deploy = edit the node's consts.
   * NAMED LLM knobs (``model``/``temperature``/``max_tokens``/``system_prompt``)
     flow through a CALL-TIME injector the author wires (`apply_llm_config`),
-    consulted by the node's LLM call at call time — AEDE's pattern (a module-level
-    ``_NODE_CONFIG`` the groq client reads).
+    consulted by the node's LLM call at call time — the usual pattern is a
+    module-level config table the SDK client wrapper reads.
 
 This module is **langgraph-FREE**: it imports no langgraph types. The langgraph
 dependency enters only when a concrete app's ``graph_factory`` builds the real
@@ -47,6 +47,9 @@ import archforge.models as m
 from archforge import userconfig as ucfg
 from archforge.host.adapters.base import BaseHostAdapter
 from archforge.host.adapters.helpers import KnobVote, estimate_tokens, run_id
+from archforge.host.adapters.inject import (
+    NodeLocator, SdkInjector, apply_knob_settings,
+)
 from archforge.lint import lint
 from archforge.middleware import TracingMiddleware
 
@@ -130,7 +133,7 @@ class NodeIdMap:
     ``__getitem__`` validates against the compiled graph's node names (drops
     langgraph's built-in ``__start__`` / ``__end__``) and raises ``KeyError``
     listing the declared names on a miss → a rename in ``build_graph`` fails
-    LOUDLY at aede_app import (fail-fast per node), never a silently-mislabeled
+    LOUDLY at app import (fail-fast per node), never a silently-mislabeled
     run. Introspection is limited to node NAMES — the most stable surface — one
     time at wiring; "describe, don't introspect" still protects the version-
     fragile internals/routing the rest of the adapter avoids.
@@ -184,18 +187,32 @@ class LangGraphApp:
                         ``{}`` — prompts live as node-code literals for most
                         LangGraph apps, so the seeded prompt is empty and a
                         ``prompt_edit`` rides through).
+      settings_getter : ``() -> settings singleton`` (default ``None``). With
+                        ``knob_to_settings``, EXTRA knobs that the host reads
+                        from a settings object (not from state) become tunable
+                        with zero host edits: the runnable snapshots the mapped
+                        fields, mutates them in place for the run, and restores
+                        them after. Example: ``lambda: mypkg.config.settings``.
+      knob_to_settings: ``{knob_name: (section_attr, field_attr)}`` — e.g.
+                        ``{"max_k": ("retrieval", "max_k")}``.
+      node_modules    : ``{module_name: node_id}`` attribution overlay for the
+                        zero-touch injector (rarely needed; the map is derived
+                        from the compiled graph's node callables).
 
     Behavior hooks (override for the MAS; defaults are sensible):
       initialize_state(task_input) -> dict      — the graph's initial_state.
       summarize(node_id, partial, merged) -> str — what each Step records as
         ``response_out`` (the Judge scores this; assertions read it).
-      apply_llm_config(node_id, vote) -> None   — push the live named LLM knobs
-        into whatever the node's LLM call consults (a module-level registry).
-        Default noop; override iff the MAS has LLM nodes whose model/temp you
-        want tunable. Called UP-FRONT per run (graph.stream emits a node only
-        after it runs, so this pre-population is the only viable shape).
-      reset_llm_config() -> None               — clear it before a run (default
-        noop).
+      apply_llm_config(node_id, vote) -> None   — deliver the live named LLM
+        knobs. The DEFAULT records the vote for the zero-touch injector
+        (``inject.SdkInjector``), which patches the host's LLM SDKs at the
+        boundary for the run and rewrites the request per node — the host
+        needs NO call-time config seam of its own. Override only to route the
+        vote through an explicit seam instead (the injector then stays off).
+        Called UP-FRONT per run (graph.stream emits a node only after it runs,
+        so this pre-population is the only viable shape).
+      reset_llm_config() -> None               — clear before a run (default:
+        clears the recorded votes; override to clear an explicit seam).
     """
     # required class attributes (the author MUST set these on the subclass):
     graph_factory: Callable[[], Any]
@@ -207,6 +224,9 @@ class LangGraphApp:
     runtime_loops: list[tuple[str, str]] = []
     final_output_key: str = "answer"
     base_prompts: dict[str, str] = {}
+    settings_getter: Callable[[], Any] | None = None
+    knob_to_settings: dict[str, tuple[str, str]] = {}
+    node_modules: dict[str, str] = {}
 
     # Tracing budget (the OTel trace-projection gate):
     #   None       -> read the ``DEFAULT_TRACE_TOTAL_BUDGET_TOK`` tunable (the
@@ -219,6 +239,14 @@ class LangGraphApp:
     #                 answer step. A per-app override lets one MAS opt in without
     #                 touching config.
     trace_total_budget: int | None = None
+
+    def __init__(self) -> None:
+        # Per-run vote store for the zero-touch injector (the default
+        # ``apply_llm_config`` records here; ``SdkInjector`` reads it) and the
+        # first-observed system prompt per node (the ``cfg_decay`` base for a
+        # later ``prompt_edit`` when ``base_prompts`` left the node empty).
+        self._pending_votes: dict[str, KnobVote] = {}
+        self.captured_prompts: dict[str, str] = {}
 
     # ---- behavior hooks (override me) -------------------------------------- #
     def initialize_state(self, task_input: str) -> dict[str, Any]:
@@ -237,14 +265,15 @@ class LangGraphApp:
         return blob[:500]
 
     def apply_llm_config(self, node_id: str, vote: KnobVote) -> None:
-        """Push the live named LLM knobs (model/temp/max_tokens/system_prompt)
-        into the node's LLM-call site. Default noop — override iff the MAS has
-        LLM nodes whose model/temp you want tunable."""
-        return None
+        """Default: record the vote for the zero-touch SDK injector (see the
+        class docstring). Override to route the vote through the MAS's own
+        call-time seam instead — overriding disables the injector for the app
+        (the runnable detects the override and never patches the SDKs)."""
+        self._pending_votes[node_id] = vote
 
     def reset_llm_config(self) -> None:
-        """Clear the call-time injector before a run (called at run start)."""
-        return None
+        """Default: clear the recorded votes (called at run start)."""
+        self._pending_votes.clear()
 
     # ---- derived (the adapter reads these) --------------------------------- #
     def kind_of(self, node_id: str) -> m.NodeKind:
@@ -300,7 +329,9 @@ class LangGraphHostAdapter(BaseHostAdapter):
         self._app = app
         # build + validate the bootstrap Spec once (catches a malformed app early)
         self._spec = app.build_spec()
-        self.base_prompts = app.base_prompts
+        # Copy (not alias) so prompt-capture merges during runs never rewrite
+        # the app's declared base_prompts.
+        self.base_prompts = dict(app.base_prompts)
         # Once-per-process OTel setup: build ArchForge's TracerProvider + the
         # in-memory span buffer and register the repo-declared auto-instrumentors.
         # Idempotent; a no-op when OTel isn't installed (the rich path degrades
@@ -369,6 +400,12 @@ class LangGraphRunnable:
         # per run; only populated when a budget is set.
         self._run_steps: list[m.Step] = []
         self._final_answer_node: str | None = None
+        # Real provider usage per node, filled by the SDK injector (one entry
+        # per observed call, in call order) and drained by ``_record``: each
+        # step consumes everything recorded since the previous step for that
+        # node, which is exactly the calls made during that node's execution.
+        # Stays empty for explicit-seam apps → the estimate path is unchanged.
+        self._usage: dict[str, list[int]] = {}
 
         # 1. Call-time LLM config: populate the injector UP-FRONT. graph.stream
         #    emits a node only *after* it runs, so pre-population is the only
@@ -391,8 +428,13 @@ class LangGraphRunnable:
             )
             self._app.apply_llm_config(nd.node_id, vote)
 
-        # 2. initial_state, then overlay the live Spec's EXTRA knobs (state-routed).
+        # 2. initial_state, then overlay the live Spec's EXTRA knobs. Two routes:
+        #    state-routed (``knob_to_state``) into initial_state, and
+        #    settings-routed (``knob_to_settings``) applied to the host's
+        #    settings singleton in place and restored after the run — the
+        #    zero-touch path for knobs the host reads from config, not state.
         initial: dict[str, Any] = dict(self._app.initialize_state(task.input))
+        settings_items: list[tuple[str, Any]] = []
         for nd in self._app.nodes:
             live = live_nodes.get(nd.node_id, nd)
             extras = live.knobs.model_dump(exclude=_NAMED_KNOBS)
@@ -400,22 +442,51 @@ class LangGraphRunnable:
                 if kval is None:
                     continue
                 state_key = self._app.knob_to_state.get(kname)
-                if state_key is None:
-                    continue            # an extra with no state mapping: host-owned
-                initial[state_key] = kval
+                if state_key is not None:
+                    initial[state_key] = kval
+                elif kname in self._app.knob_to_settings:
+                    settings_items.append((kname, kval))
+                # else: an extra with no mapping at all — host-owned.
 
         # 3. Drive the real graph: one Step per emitted node. Wall-clock-around-
-        #    transition (mirrors aede/runner.run_with_timings): when a new node's
+        #    transition: when a new node's
         #    chunk arrives, the *previous* node is done — record it with the
         #    transition time as its latency; the last node is recorded post-loop.
+        # 3. Zero-touch plumbing for the run (both no-ops unless configured):
+        #    a. settings-routed knobs: mutate the host's settings singleton in
+        #       place, restore in ``finally`` (runs are sequential → race-free).
+        #    b. the SDK injector: active ONLY when the app uses the DEFAULT
+        #       ``apply_llm_config`` (votes recorded in ``_pending_votes``);
+        #       an explicit-seam override disables it, so existing adapters
+        #       (and their tests) never get their SDKs patched.
+        restore_settings: Callable[[], None] = lambda: None
+        injector: SdkInjector | None = None
         merged: dict[str, Any] = dict(initial)
         final_output: str | None = None
         current: str | None = None
         current_partial: dict[str, Any] = {}
         node_started_at = 0.0
         try:
+            if settings_items and self._app.settings_getter is not None:
+                restore_settings = apply_knob_settings(
+                    self._app.settings_getter(),
+                    self._app.knob_to_settings,
+                    settings_items,
+                )
+            uses_builtin_injector = (
+                type(self._app).apply_llm_config is LangGraphApp.apply_llm_config
+            )
+            if uses_builtin_injector and self._app._pending_votes:
+                locator = NodeLocator.from_graph(
+                    self._graph, extra=dict(self._app.node_modules)
+                )
+                injector = SdkInjector(
+                    locator, self._app._pending_votes, self._app.captured_prompts,
+                    usage=self._usage,
+                )
+                injector.install()
             for chunk in self._graph.stream(initial, stream_mode="updates"):
-                # AEDE-style graphs have no parallel branch ⇒ one node/superstep.
+                # Graphs with no parallel branch emit one node per superstep.
                 # A multi-key chunk means a parallel branch the adapter doesn't
                 # yet model — fail loudly with a clear message, not silently.
                 assert len(chunk) == 1, (
@@ -459,6 +530,16 @@ class LangGraphRunnable:
             return self._mw.end_run(final_output, ok=True, error=None)
         except Exception as exc:  # noqa: BLE001 — flush a partial trace (E4)
             return self._mw.end_run(final_output, ok=False, error=repr(exc))
+        finally:
+            if injector is not None:
+                injector.uninstall()
+            restore_settings()
+            # Prompt capture: fill GAPS in the adapter's base_prompts with the
+            # system prompts observed on the wire, so a later ``prompt_edit``
+            # has a real base even when the app left ``base_prompts`` empty.
+            # Declared prompts win (setdefault never overwrites).
+            for _nid, _prompt in self._app.captured_prompts.items():
+                self._adapter.base_prompts.setdefault(_nid, _prompt)
 
     # ---- one step ---------------------------------------------------------- #
     def _record(
@@ -476,7 +557,7 @@ class LangGraphRunnable:
             prompt_in = ""            # LangGraph nodes read the query from state,
             # Kind-aware cost: LLM nodes cost tokens; retriever/rule/symbolic ~0
             # (their real cost is wall-clock — `latency_ms`).
-            tokens = estimate_tokens(resp) if kind is m.NodeKind.LLM else 0
+            tokens = self._tokens_for(node_name, resp, kind)
         else:
             from archforge.otel import project as _project
             proj = _project(node_name, kind, partial, merged)
@@ -484,7 +565,7 @@ class LangGraphRunnable:
                 # graceful degrade: OTel absent / no child spans / non-LLM kind
                 resp = self._app.summarize(node_name, partial, merged)
                 prompt_in = ""
-                tokens = estimate_tokens(resp) if kind is m.NodeKind.LLM else 0
+                tokens = self._tokens_for(node_name, resp, kind)
             else:
                 resp = proj.response_out
                 prompt_in = proj.prompt_in
@@ -503,6 +584,20 @@ class LangGraphRunnable:
             # place (middleware holds the same ref → end_run sees trimmed values).
             self._run_steps.append(step)
         self._mw._record_step(step)
+
+    def _tokens_for(self, node_name: str, resp: str, kind: m.NodeKind) -> int:
+        """Step cost: real provider usage when the injector observed this node's
+        calls, else the len//4 estimate. Draining (sum + clear) works with
+        loops: a node's step consumes exactly the calls made since its previous
+        step. Non-LLM kinds stay ~0 (their cost is wall-clock)."""
+        if kind is not m.NodeKind.LLM:
+            return 0
+        rec = self._usage.get(node_name)
+        if rec:
+            total = sum(rec)
+            rec.clear()
+            return total
+        return estimate_tokens(resp)
 
 
 __all__ = [
@@ -528,8 +623,8 @@ __all__ = [
 #
 # General: needs only the Spec. The projection is faithful (the Spec's native
 # knob vocabulary), so the per-MAS consumer owns the one-time
-# ``node_id.knob_name → config field`` mapping (e.g. AEDE's
-# ``Settings.from_env`` reads this and overlays onto ``PipelineConfig``). The
+# ``node_id.knob_name → config field`` mapping (e.g. the host's settings loader
+# reads this and overlays onto its config objects). The
 # exporter does NOT guess that mapping — "describe, don't introspect."
 
 def _node_knob_projection(node: m.Node) -> dict[str, Any]:
@@ -594,15 +689,15 @@ def load_spec_sidecar(path: str | Path) -> dict[str, dict[str, Any]]:
 # The envelope is the single file production loads to apply the winner AND audit
 # it: the knobs (today's sidecar body, nested under ``knobs``) plus the lineage,
 # the Gatekeeper decision, and the scores that justified the promote. One artifact
-# → Tier-2 deploy: the MAS reads ``envelope["knobs"]`` (a one-line change to a
-# consumer like AEDE's ``aede_sidecar``), the rest is human-readable provenance.
+# → Tier-2 deploy: the MAS reads ``envelope["knobs"]`` (a one-line change to its
+# sidecar consumer), the rest is human-readable provenance.
 # Rollback is deleting the file; the diff is what Git shows between promotes.
 #
 # `knobs` is NESTED UNDER the key named `knobs` (vs the sidecar's flat top level)
 # so the envelope has room for `schema`/`spec_id`/`scores`/… alongside it. The
 # per-MAS consumer changes ONE line: `load_spec_sidecar(path)` →
-# `load_optimized(path)["knobs"]`. That AEDE consumer edit is OUT OF SCOPE here
-# (tracked by the AEDE integration tasks); this module ships the producer.
+# `load_optimized(path)["knobs"]`. That consumer edit belongs to the host
+# project; this module ships the producer.
 
 ENVELOPE_SCHEMA = "archforge.optimized/v1"
 

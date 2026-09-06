@@ -25,6 +25,12 @@ from archforge.host.adapters.langgraph import (
     NodeIdMap, build_optimized_envelope, export_optimized, export_spec_sidecar,
     load_optimized, load_spec_sidecar, node_ids,
 )
+# The zero-touch injector — SDK-boundary patching + settings-knob overlay the
+# default `LangGraphApp.apply_llm_config` drives. SDK-free at import (every
+# provider import is lazy, inside the patch functions).
+from archforge.host.adapters.inject import (
+    NodeLocator, SdkInjector, apply_knob_settings,
+)
 # `wrapped` is deliberately NOT re-exported at the package level: a MAS authors
 # the id ONCE in its `build_graph` via `add(name, fn)` and imports `wrapped`
 # from `archforge.host.adapters.langgraph` (the adapter module the MAS already
@@ -38,4 +44,5 @@ __all__ = [
     "LangGraphRunnable", "NodeIdMap", "node_ids",
     "export_spec_sidecar", "load_spec_sidecar",
     "build_optimized_envelope", "export_optimized", "load_optimized",
+    "NodeLocator", "SdkInjector", "apply_knob_settings",
 ]
