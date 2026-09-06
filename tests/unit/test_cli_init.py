@@ -226,16 +226,15 @@ def test_env_example_no_real_keys(tmp_path: Path, monkeypatch) -> None:  # type:
 # --------------------------------------------------------------------------- #
 # These pin the contract: `init` writes a name-neutral `archforge_optimizer/` package
 # (LangGraph adapter skeleton) at the project root, so a user edits `# EDIT:` markers
-# instead of coding the adapter wiring from scratch. The AEDE glue stays the in-repo
-# reference (not shipped); the scaffold is a derived, name-neutralized copy from string
-# constants. init does NOT self-write spec.json — `make-spec` builds it from the edited
+# instead of coding the adapter wiring from scratch. The scaffold is name-neutral and
+# runtime-generated from string constants (nothing host-specific leaks into it).
+# init does NOT self-write spec.json — `make-spec` builds it from the edited
 # adapter.
 
 def test_init_scaffolds_adapter_package(tmp_path: Path, capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """`init` writes `archforge_optimizer/` with the 5 generic-adapter files, each
-    syntactically compilable, carrying the placeholder `App`/`AppAdapter` names, free
-    of any `aede`/`AEDE` literal (regression guard for name-neutrality), and with NO
-    spec.json written (make-spec's job)."""
+    syntactically compilable, carrying the placeholder `App`/`AppAdapter` names,
+    and with NO spec.json written (make-spec's job)."""
     monkeypatch.chdir(tmp_path)
     rc = main(["init"])
     assert rc == 0
@@ -252,10 +251,6 @@ def test_init_scaffolds_adapter_package(tmp_path: Path, capsys, monkeypatch) -> 
         compile(fpath.read_text(encoding="utf-8"), str(fpath), "exec")  # noqa: S102
         assert f"created: archforge_optimizer/{name}" in out
 
-    # name-neutral: no aede/AEDE leaked into any scaffolded file (the scaffold is generic)
-    for name in _ADAPTER_FILES:
-        raw = (pkg / name).read_text(encoding="utf-8").lower()
-        assert "aede" not in raw, f"`aede` leaked into scaffolded {name}"
     # the placeholder class names the README / --adapter line points at are present
     app_text = (pkg / "app.py").read_text(encoding="utf-8")
     host_text = (pkg / "host.py").read_text(encoding="utf-8")

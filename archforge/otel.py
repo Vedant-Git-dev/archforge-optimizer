@@ -4,7 +4,7 @@ Spec #1 of the three library-delegation specs (design:
 ``docs/superpowers/specs/2026-08-08-tracing-otel-design.md``). It enriches the
 host-STREAMING path's lossy per-step ``Step``: ``LangGraphRunnable._record``
 builds ``Step(prompt_in="", response_out=app.summarize(...))`` — a contentless
-label like ``"answer_len=1189"`` that hid AEDE's wrong-domain ``reason``
+label like ``"answer_len=1189"`` that can hide a wrong-domain
 completion from the Judge. This module auto-instruments the MAS's SDK calls as
 OTel GenAI spans and projects a BOUNDED slice of the real prompt/completion into
 the ``Step`` the Judge reads.

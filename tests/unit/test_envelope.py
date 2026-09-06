@@ -228,7 +228,7 @@ def test_export_optimized_round_trips(tmp_path: Path) -> None:
 def test_envelope_compat_sidecar_consumer_switches_to_knobs(tmp_path: Path) -> None:
     """A consumer that today reads ``load_spec_sidecar(path)`` (the bare
     ``{node_id:{knob}}``) switches to ``load_optimized(path)["knobs"]`` — same
-    body, nested one level. This is the documented one-line AEDE consumer edit."""
+    body, nested one level. This is the documented one-line consumer edit."""
 
     spec = _spec([_n("retrieve", kind=m.NodeKind.RETRIEVER,
                     knobs=m.Knobs(top_k=8, tunable=("top_k",)))], spec_id="c")

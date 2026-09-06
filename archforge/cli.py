@@ -1160,7 +1160,7 @@ def main(argv: list[str] | None = None, *,
 
     # Run in CWD (improvement #1): put the caller's working directory on sys.path
     # so `--adapter module:Class` (and a host adapter that imports the project's
-    # own modules — e.g. `aede`) resolves from the dir the user runs in. Under the
+    # own modules) resolves from the dir the user runs in. Under the
     # console script (`archforge-optimizer …`) CWD is NOT on sys.path by default,
     # which forced the earlier `PYTHONPATH=".:.." python -m archforge` friction;
     # under `python -m archforge` CWD is already present, so this is a no-op there.

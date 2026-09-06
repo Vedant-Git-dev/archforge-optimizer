@@ -1,6 +1,6 @@
 """LangGraph adapter E2E — drives a REAL compiled LangGraph through the Forge.
 
-A tiny synthetic LangGraph app whose topology is the distinctive AEDE shape
+A tiny synthetic LangGraph app with a realistic retrieval-pipeline topology
 (retriever → rule router → conditional fan-out → a runtime retrieve_more LOOP
 edge) proves the generic ``LangGraphHostAdapter`` end-to-end on the production
 organs — REAL ``Engine`` + REAL ``Architect`` (via ``ScriptedLLM``) + REAL
@@ -55,7 +55,7 @@ from typing_extensions import TypedDict  # noqa: E402
 # --------------------------------------------------------------------------- #
 
 _DOCS = [f"doc-{i} evidence about topic {i % 3}" for i in range(16)]
-_MAX_K = 16   # the loop's termination guard (mirror AEDE's max_retrieval_reached)
+_MAX_K = 16   # the loop's termination guard (max-retrieval-reached)
 
 
 class _DemoState(TypedDict, total=False):
@@ -70,7 +70,7 @@ class _DemoState(TypedDict, total=False):
 
 
 def _retrieve(state: _DemoState) -> dict:
-    # k from state (the live knob) — same shape as AEDE's focused_retriever.
+    # k from state (the live knob) — the focused-retriever shape.
     k = state.get("current_top_k", 4)
     return {
         "documents": _DOCS[:k],
@@ -129,7 +129,7 @@ def _build_demo_graph():
 # The MAS description (LangGraphApp) + its host adapter
 # --------------------------------------------------------------------------- #
 
-# Call-time LLM injector (the AEDE `_NODE_CONFIG` pattern, distilled). The
+# Call-time LLM injector (the module-level config-table pattern, distilled). The
 # `answer` node (a real LLM in a real app) would consult this; the demo does NOT
 # so the run stays free, but the adapter still populates it so a `model_swap`
 # is observably delivered to the injector.

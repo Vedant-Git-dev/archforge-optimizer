@@ -156,13 +156,11 @@ EDITABLE_NAMES: tuple[str, ...] = tuple(name for name, _, _ in _FIELDS)
 # --------------------------------------------------------------------------- #
 # the generic LangGraph adapter scaffold — `init` ALSO writes these into a fresh
 # `archforge_optimizer/` package in the user's project root, so they EDIT their MAS
-# details instead of coding the wiring from scratch. A name-neutralized, generalized
-# copy of the in-repo AEDE glue (`AEDE/backend/archforge_glue/`), which is NOT shipped
-# (excluded from the sdist/wheel). Pure data: string constants, no archforge import,
-# no real MAS, no secrets here. The placeholder roster (retrieve -> answer) forms a
-# VALID Spec (it lints), so `--seed archforge_optimizer/spec.json` bootstraps BEFORE
-# the user fills in the real graph; `app.py` self-writes `spec.json` at import
-# (mirrors AEDE's `write_aede_spec_json()`). Keys are paths relative to the package
+# details instead of coding the wiring from scratch. Pure data: string constants, no
+# archforge import, no real MAS, no secrets here, runtime-generated so the sdist/wheel
+# ship only `archforge/`. The placeholder roster (retrieve -> answer) forms a
+# VALID Spec (it lints), and `make-spec` builds the real `spec.json` from the edited
+# adapter. Keys are paths relative to the package
 # dir (`archforge_optimizer/`); the folder name itself is fixed.
 # --------------------------------------------------------------------------- #
 _ADAPTER_PKG_FILES: dict[str, str] = {
@@ -352,21 +350,24 @@ class App(LangGraphApp):
         return f"{node_id}: {len(str(merged))}b"
 
     # ---- LLM-injection (call-time, populated up-front per run) ----------- #
-    def apply_llm_config(self, node_id: str, vote) -> None:
-        # ``vote`` is a KnobVote (model/temperature/max_tokens/system_prompt); each
-        # None => "no override" (base run = your MAS's default). The generic adapter
-        # calls this up-front for every LLM node before graph.stream runs.
-        # EDIT: route the vote into your MAS's call-time config (the reference
-        # adapter points at its MAS's call-time node-config module), e.g.::
-        #     _my_nodecfg.set_node_config(node_id, model=vote.model,
-        #         temperature=vote.temperature, max_tokens=vote.max_tokens,
-        #         system_prompt=vote.system_prompt)
-        pass
-
-    def reset_llm_config(self) -> None:
-        # EDIT: clear the call-time injector before a run (the reference adapter
-        # calls its node-config module's ``reset()``).
-        pass
+    # ZERO-TOUCH DEFAULT: the base ``apply_llm_config`` records each vote and
+    # the adapter patches the LLM SDKs (groq / openai / google.genai) at the
+    # boundary for the run, attributing each call to its node by module and
+    # rewriting model/temperature/max_tokens/system_prompt per the vote. Your
+    # MAS needs NO call-time config seam of its own — do NOT override
+    # ``apply_llm_config`` unless you prefer an explicit seam (overriding
+    # disables the injector for this app).
+    #
+    # OPTIONAL zero-touch extras for knobs your MAS reads from a settings
+    # singleton instead of state (no node edits needed — the adapter mutates
+    # the fields in place per run and restores them after)::
+    #
+    #     settings_getter = staticmethod(lambda: settings)   # from mymas.config import settings
+    #     knob_to_settings = {"max_k": ("retrieval", "max_k")}
+    #
+    # Base prompts: the injector captures the first system prompt it observes
+    # per node, so a ``prompt_edit`` gets a real base even with
+    # ``base_prompts`` left empty.
 
 
 def write_spec_json(path: str | os.PathLike[str] | None = None) -> Path:
